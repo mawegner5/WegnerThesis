@@ -2,13 +2,13 @@ import os
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras import layers, models, optimizers, callbacks
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
 from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
 
 # Set the number of epochs
-epochs = 10
+epochs = 50
 
 # Set the paths for the datasets
 data_dir = "/root/.ipython/WegnerThesis/data/unzipped_data/CUB_200_2011/CUB_200_2011"
@@ -66,10 +66,6 @@ valid_images, valid_labels = load_images_and_labels(valid_data)
 print(f"Train images shape: {train_images.shape}, Train labels shape: {train_labels.shape}")
 print(f"Validation images shape: {valid_images.shape}, Validation labels shape: {valid_labels.shape}")
 
-# Ensure data types are correct
-print(f"Train images dtype: {train_images.dtype}, Train labels dtype: {train_labels.dtype}")
-print(f"Validation images dtype: {valid_images.dtype}, Validation labels dtype: {valid_labels.dtype}")
-
 # Define a simple CNN model
 model = models.Sequential()
 
@@ -99,6 +95,15 @@ model.compile(optimizer=optimizers.Adam(),
 # Summary of the model
 model.summary()
 
+# Learning rate scheduler callback
+lr_scheduler = callbacks.ReduceLROnPlateau(
+    monitor='val_loss', 
+    factor=0.1, 
+    patience=5, 
+    min_lr=1e-6, 
+    verbose=1
+)
+
 # Data augmentation for the training set
 train_datagen = ImageDataGenerator(
     rotation_range=20,
@@ -116,7 +121,8 @@ history = model.fit(
     steps_per_epoch=len(train_images) // batch_size,
     epochs=epochs,
     validation_data=(valid_images, valid_labels),
-    validation_steps=len(valid_images) // batch_size
+    validation_steps=len(valid_images) // batch_size,
+    callbacks=[lr_scheduler]
 )
 
 # Save the model
@@ -132,7 +138,7 @@ plot_dir = "/root/.ipython/WegnerThesis/charts_figures_etc"
 if not os.path.exists(plot_dir):
     os.makedirs(plot_dir)
 
-# Plotting training & validation loss valuesr
+# Plotting training & validation loss values
 plt.figure()
 plt.plot(history.history['loss'], label='Train Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')

@@ -1,0 +1,1 @@
+Mean Squared Error on Validation Set: 199.0629
