@@ -7,8 +7,19 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, i
 from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
 
-# Set the number of epochs
+# Hyperparameters
 epochs = 50
+batch_size = 32
+learning_rate = 0.001
+lr_reduction_factor = 0.1
+lr_patience = 5
+lr_min = 1e-6
+img_height, img_width = 224, 224
+dropout_rate = 0.5
+conv1_filters = 32
+conv2_filters = 64
+conv3_filters = 128
+dense_units = 256
 
 # Set the paths for the datasets
 data_dir = "/root/.ipython/WegnerThesis/data/unzipped_data/CUB_200_2011/CUB_200_2011"
@@ -17,10 +28,6 @@ labels_file = os.path.join(data_dir, 'image_class_labels.txt')
 images_file = os.path.join(data_dir, 'images.txt')
 attributes_file = os.path.join(data_dir, 'attributes/class_attribute_labels_continuous.txt')
 train_test_split_file = os.path.join(data_dir, 'train_test_split.txt')
-
-# Image settings
-img_height, img_width = 224, 224
-batch_size = 32
 
 # Load mappings
 image_id_to_class = pd.read_csv(labels_file, delim_whitespace=True, header=None, names=['image_id', 'class_id'])
@@ -66,29 +73,29 @@ valid_images, valid_labels = load_images_and_labels(valid_data)
 print(f"Train images shape: {train_images.shape}, Train labels shape: {train_labels.shape}")
 print(f"Validation images shape: {valid_images.shape}, Validation labels shape: {valid_labels.shape}")
 
-# Define a simple CNN model
+# Define the CNN model
 model = models.Sequential()
 
 # Convolutional layers with MaxPooling
-model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(img_height, img_width, 3)))
+model.add(layers.Conv2D(conv1_filters, (3, 3), activation='relu', input_shape=(img_height, img_width, 3)))
 model.add(layers.MaxPooling2D((2, 2)))
 
-model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+model.add(layers.Conv2D(conv2_filters, (3, 3), activation='relu'))
 model.add(layers.MaxPooling2D((2, 2)))
 
-model.add(layers.Conv2D(128, (3, 3), activation='relu'))
+model.add(layers.Conv2D(conv3_filters, (3, 3), activation='relu'))
 model.add(layers.MaxPooling2D((2, 2)))
 
 # Flattening the output and adding Dense layers
 model.add(layers.Flatten())
-model.add(layers.Dense(256, activation='relu'))
-model.add(layers.Dropout(0.5))
+model.add(layers.Dense(dense_units, activation='relu'))
+model.add(layers.Dropout(dropout_rate))
 
 # Output layer with 312 neurons (one for each attribute)
 model.add(layers.Dense(312, activation='sigmoid'))
 
 # Compile the model with MSE as the loss function
-model.compile(optimizer=optimizers.Adam(),
+model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate),
               loss='mean_squared_error',
               metrics=[tf.keras.metrics.RootMeanSquaredError()])
 
@@ -98,9 +105,9 @@ model.summary()
 # Learning rate scheduler callback
 lr_scheduler = callbacks.ReduceLROnPlateau(
     monitor='val_loss', 
-    factor=0.1, 
-    patience=5, 
-    min_lr=1e-6, 
+    factor=lr_reduction_factor, 
+    patience=lr_patience, 
+    min_lr=lr_min, 
     verbose=1
 )
 

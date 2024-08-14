@@ -12,6 +12,7 @@ labels_file = os.path.join(data_dir, 'image_class_labels.txt')
 images_file = os.path.join(data_dir, 'images.txt')
 attributes_file = os.path.join(data_dir, 'attributes/class_attribute_labels_continuous.txt')
 train_test_split_file = os.path.join(data_dir, 'train_test_split.txt')
+class_names_file = os.path.join(data_dir, 'classes.txt')
 output_csv_path = "/root/.ipython/WegnerThesis/charts_figures_etc/predicted_vs_actual_test_images.csv"
 
 # Load the model
@@ -24,6 +25,7 @@ img_height, img_width = 224, 224
 image_id_to_class = pd.read_csv(labels_file, delim_whitespace=True, header=None, names=['image_id', 'class_id'])
 image_id_to_filename = pd.read_csv(images_file, delim_whitespace=True, header=None, names=['image_id', 'filename'])
 class_id_to_attributes = pd.read_csv(attributes_file, delim_whitespace=True, header=None)
+class_id_to_name = pd.read_csv(class_names_file, delim_whitespace=True, header=None, names=['class_id', 'class_name'])
 
 # Load train/test split
 train_test_split = pd.read_csv(train_test_split_file, delim_whitespace=True, header=None, names=['image_id', 'is_training'])
@@ -31,6 +33,7 @@ train_test_split = pd.read_csv(train_test_split_file, delim_whitespace=True, hea
 # Merge to get a complete dataset
 dataset = image_id_to_class.merge(image_id_to_filename, on='image_id').merge(train_test_split, on='image_id')
 dataset = dataset.merge(class_id_to_attributes, left_on='class_id', right_index=True)
+dataset = dataset.merge(class_id_to_name, on='class_id')
 
 # Filter to get only test data
 test_data = dataset[dataset['is_training'] == 0]
@@ -46,22 +49,25 @@ def load_images_and_labels(data):
     """ Load images and corresponding labels """
     images = []
     labels = []
+    bird_names = []
 
     for _, row in data.iterrows():
         img_path = os.path.join(images_dir, row['filename'])
         img = preprocess_image(img_path)
         images.append(img)
-        labels.append(row.iloc[4:].values.astype(float) / 100.0)  # Convert percentage to [0, 1] range
+        labels.append(row.iloc[4:-1].values.astype(float) / 100.0)  # Convert percentage to [0, 1] range
+        bird_names.append(row['class_name'])
 
-    return np.array(images, dtype=np.float32), np.array(labels, dtype=np.float32)
+    return np.array(images, dtype=np.float32), np.array(labels, dtype=np.float32), bird_names
 
 # Load test data
-test_images, test_labels = load_images_and_labels(test_data)
+test_images, test_labels, test_bird_names = load_images_and_labels(test_data)
 
 # Randomly select 20 test images
 random_indices = np.random.choice(len(test_images), 20, replace=False)
 selected_test_images = test_images[random_indices]
 selected_test_labels = test_labels[random_indices]
+selected_bird_names = [test_bird_names[i] for i in random_indices]
 
 # Predict using the model
 predictions = model.predict(selected_test_images)
@@ -78,8 +84,8 @@ print(f"Mean Squared Error on Selected Test Images: {mse:.4f}")
 output_data = []
 
 for i in range(len(selected_test_images)):
-    output_data.append(true_percentages[i])
-    output_data.append(predicted_percentages[i])
+    output_data.append([selected_bird_names[i], "true"] + list(true_percentages[i]))
+    output_data.append([selected_bird_names[i], "predicted"] + list(predicted_percentages[i]))
 
 # Save the DataFrame as a CSV file
 output_df = pd.DataFrame(output_data)
