@@ -1,3 +1,4 @@
+import time
 import openai
 import pandas as pd
 from sklearn.metrics import accuracy_score
@@ -10,20 +11,27 @@ load_dotenv()
 # Set up your OpenAI API key securely
 openai.api_key = os.getenv('OPENAI_API_KEY')
 
-def guess_bird_class(attributes):
-    # Formulate the prompt for the LLM
+def guess_bird_class(attributes, max_retries=5):
+    """ Guess the bird species based on attributes, with retry logic for rate limits """
     prompt = f"Given these attributes, guess the bird species: {attributes}. Only return the guessed species name."
     
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant that guesses bird species based on attributes."},
-            {"role": "user", "content": prompt}
-        ]
-    )
+    for attempt in range(max_retries):
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that guesses bird species based on attributes."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            guess = response.choices[0]['message']['content'].strip()
+            return guess
+        
+        except openai.error.RateLimitError as e:
+            print(f"Rate limit error encountered: {e}. Retrying in {2 ** attempt} seconds...")
+            time.sleep(2 ** attempt)  # Exponential backoff
     
-    guess = response.choices[0]['message']['content'].strip()
-    return guess
+    raise Exception("Max retries exceeded for API request.")
 
 # File paths
 input_file = "/root/.ipython/WegnerThesis/data/unzipped_data/CUB_200_2011/class_attributes.xlsx"
@@ -54,7 +62,7 @@ for index, row in attributes_df.iterrows():
 # Create a DataFrame for the results
 results_df = pd.DataFrame({
     'Actual Class': actual_labels,
-    'Predicted Class': predicted_labelså
+    'Predicted Class': predicted_labels
 })
 
 # Save the results to a CSV file
