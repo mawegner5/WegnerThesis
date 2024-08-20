@@ -3,6 +3,7 @@ import pandas as pd
 import os
 from dotenv import load_dotenv
 import re
+import time
 
 # Load your API key from the environment file
 load_dotenv('/root/.ipython/WegnerThesis/.env')
@@ -17,26 +18,42 @@ df = pd.read_csv(input_csv_path)
 
 # Function to interact with the OpenAI API to predict the bird species
 def predict_species(descriptors):
-    prompt = f"Given the following descriptors: {descriptors}, what bird species is this? Please force a guess, do not accept unknown as an answer, and respond with just the bird species name."
-    
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "Pretend you are an amateur bird watcher."},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=50,
-        temperature=0.5,
+    prompt = (
+        f"Consider the following descriptors: {descriptors}. "
+        "Please thoroughly analyze all possible bird species and "
+        "provide the best guess. Do not rush and consider a wide range "
+        "of bird species before making your decision. Respond only with "
+        "the species name."
     )
     
-    predicted_species = response['choices'][0]['message']['content'].strip()
-    
-    # Clean the response to extract the bird species name
-    species_name = re.search(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', predicted_species)
-    if species_name:
-        return species_name.group(0).strip()
-    else:
-        return predicted_species  # Return the original if regex doesn't match
+    for attempt in range(3):  # Retry up to 3 times if there's an API error or invalid response
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are an expert ornithologist."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=100,  # Increase to allow for more detailed responses
+                temperature=0.7,  # Slightly increase temperature for more varied responses
+            )
+            predicted_species = response['choices'][0]['message']['content'].strip()
+            
+            # Clean the response to extract the bird species name
+            species_name = re.search(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', predicted_species)
+            if species_name and len(species_name.group(0).strip()) > 2:
+                return species_name.group(0).strip()
+            else:
+                print(f"Invalid response: {predicted_species}. Retrying...")
+                continue
+        except openai.error.APIError as e:
+            print(f"APIError encountered: {e}. Retrying...")
+            time.sleep(5)  # Wait for 5 seconds before retrying
+        except Exception as e:
+            print(f"An error occurred: {e}. Skipping this descriptor.")
+            return "Error"
+
+    return "API Error"
 
 # Iterate through the dataset and get predictions
 results = []
