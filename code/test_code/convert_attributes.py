@@ -2,7 +2,7 @@ import pandas as pd
 import os
 
 # Define the threshold hyperparameter
-threshold = 10  # Example threshold value; adjust this as needed
+threshold = 75.0  # Example threshold value; adjust this as needed
 
 # Load the dataset
 input_csv_path = '/root/.ipython/WegnerThesis/data/generated_data/class_attributes.csv'

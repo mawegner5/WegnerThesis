@@ -2,6 +2,7 @@ import openai
 import pandas as pd
 import os
 from dotenv import load_dotenv
+import re
 
 # Load your API key from the environment file
 load_dotenv('/root/.ipython/WegnerThesis/.env')
@@ -16,12 +17,12 @@ df = pd.read_csv(input_csv_path)
 
 # Function to interact with the OpenAI API to predict the bird species
 def predict_species(descriptors):
-    prompt = f"Given the following descriptors: {descriptors}, what bird species is this?"
+    prompt = f"Given the following descriptors: {descriptors}, what bird species is this? Please force a guess, do not accept unknown as an answer, and respond with just the bird species name."
     
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "You are an expert ornithologist."},
+            {"role": "system", "content": "Pretend you are an amateur bird watcher."},
             {"role": "user", "content": prompt}
         ],
         max_tokens=50,
@@ -29,7 +30,13 @@ def predict_species(descriptors):
     )
     
     predicted_species = response['choices'][0]['message']['content'].strip()
-    return predicted_species
+    
+    # Clean the response to extract the bird species name
+    species_name = re.search(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', predicted_species)
+    if species_name:
+        return species_name.group(0).strip()
+    else:
+        return predicted_species  # Return the original if regex doesn't match
 
 # Iterate through the dataset and get predictions
 results = []
