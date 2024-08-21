@@ -20,10 +20,8 @@ df = pd.read_csv(input_csv_path)
 def predict_species(descriptors):
     prompt = (
         f"Consider the following descriptors: {descriptors}. "
-        "Please thoroughly analyze all possible bird species and "
-        "provide the best guess. Do not rush and consider a wide range "
-        "of bird species before making your decision. Respond only with "
-        "the species name."
+        "Please carefully analyze all possible bird species and "
+        "provide your best guess. Respond only with the species name, and do not include any other text."
     )
     
     for attempt in range(3):  # Retry up to 3 times if there's an API error or invalid response
@@ -31,20 +29,19 @@ def predict_species(descriptors):
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are an expert ornithologist."},
+                    {"role": "system", "content": "You are an expert ornithologist. You must only respond with the name of the bird species."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=100,  # Increase to allow for more detailed responses
+                max_tokens=50,  # Limiting to ensure it focuses on just the species name
                 temperature=0.7,  # Slightly increase temperature for more varied responses
             )
             predicted_species = response['choices'][0]['message']['content'].strip()
             
-            # Clean the response to extract the bird species name
-            species_name = re.search(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', predicted_species)
-            if species_name and len(species_name.group(0).strip()) > 2:
-                return species_name.group(0).strip()
+            # Ensure that the response is a valid species name
+            if re.match(r'^[A-Z][a-z]+\s[A-Z][a-z]+$', predicted_species):
+                return predicted_species
             else:
-                print(f"Invalid response: {predicted_species}. Retrying...")
+                print(f"Invalid response: '{predicted_species}'. Retrying...")
                 continue
         except openai.error.APIError as e:
             print(f"APIError encountered: {e}. Retrying...")
