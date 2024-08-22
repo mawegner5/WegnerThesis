@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import mean_squared_error
-
+#set
 # Set the paths
 model_path = '/root/.ipython/WegnerThesis/data/CNN_Data/cnn_model.h5'
 data_dir = "/root/.ipython/WegnerThesis/data/unzipped_data/CUB_200_2011/CUB_200_2011"

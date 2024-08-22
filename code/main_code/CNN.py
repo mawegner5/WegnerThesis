@@ -4,7 +4,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, callbacks
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_percentage_error, r2_score
 import matplotlib.pyplot as plt
 
 # Hyperparameters
@@ -97,7 +97,7 @@ model.add(layers.Dense(312, activation='sigmoid'))
 # Compile the model with MSE as the loss function
 model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate),
               loss='mean_squared_error',
-              metrics=[tf.keras.metrics.RootMeanSquaredError()])
+              metrics=[tf.keras.metrics.RootMeanSquaredError(), 'mean_absolute_percentage_error'])
 
 # Summary of the model
 model.summary()
@@ -136,9 +136,10 @@ history = model.fit(
 model.save('/root/.ipython/WegnerThesis/data/CNN_Data/cnn_model.h5')
 
 # Evaluate the model on the validation data
-val_loss, val_rmse = model.evaluate(valid_images, valid_labels)
+val_loss, val_rmse, val_mape = model.evaluate(valid_images, valid_labels)
 
 print(f"Validation RMSE: {val_rmse:.4f}")
+print(f"Validation MAPE: {val_mape:.4f}")
 
 # Set up the directory to save the plot
 plot_dir = "/root/.ipython/WegnerThesis/charts_figures_etc"
@@ -165,10 +166,14 @@ predicted_percentages = predictions * 100  # Convert back to percentage
 # Load true labels for comparison
 true_labels = valid_labels * 100  # Assuming labels are also normalized
 
-# Calculate MSE between predicted and true labels
-mse = mean_squared_error(true_labels, predicted_percentages)
-print(f"Mean Squared Error on Validation Set: {mse:.4f}")
+# Calculate MAPE and R² for more context
+mape = mean_absolute_percentage_error(true_labels, predicted_percentages)
+r2 = r2_score(true_labels, predicted_percentages)
 
-# Save the MSE result to a text file
-with open(os.path.join(plot_dir, 'validation_mse.txt'), 'w') as f:
-    f.write(f"Mean Squared Error on Validation Set: {mse:.4f}")
+# Print and save the metrics
+print(f"Mean Absolute Percentage Error (MAPE) on Validation Set: {mape:.4f}")
+print(f"Coefficient of Determination (R²) on Validation Set: {r2:.4f}")
+
+with open(os.path.join(plot_dir, 'validation_metrics.txt'), 'w') as f:
+    f.write(f"Mean Absolute Percentage Error (MAPE) on Validation Set: {mape:.4f}\n")
+    f.write(f"Coefficient of Determination (R²) on Validation Set: {r2:.4f}\n")
