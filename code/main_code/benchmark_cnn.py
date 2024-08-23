@@ -1,3 +1,12 @@
+"""
+Benchmark CNN Test Script: SSL4EO-S12 Inspired Model
+Adapted for use on the CUB-200-2011 dataset
+
+Works Cited:
+- Zhu, X., Chen, Z., & Liu, J. (2023). "SSL4EO-S12: A Large-Scale Multi-Modal, Multi-Temporal, and Multi-Band Dataset for Self-Supervised Learning in Earth Observation." 
+  Published in ICLR 2023. Original code available at: https://github.com/zhu-xlab/ssl4eo-s12
+"""
+
 import os
 import numpy as np
 import pandas as pd
