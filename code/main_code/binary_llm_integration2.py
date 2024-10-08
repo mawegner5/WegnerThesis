@@ -10,7 +10,7 @@ load_dotenv('/root/.ipython/WegnerThesis/.env')
 openai.api_key = os.getenv('OPENAI_API_KEY')
 
 # Define the threshold hyperparameter
-threshold = 0.25  # Adjust this as needed to match the binned data
+threshold = 1.0  # Adjust this as needed to match the binned data
 
 # Load the binned dataset
 input_csv_path = f'/root/.ipython/WegnerThesis/data/generated_data/binned_classes_array_{threshold}.csv'
@@ -19,58 +19,54 @@ df = pd.read_csv(input_csv_path)
 # Function to interact with the OpenAI API to predict the bird species
 def predict_species(descriptors):
     prompt = (
-        f"Consider these bird characteristics: {descriptors}\n"
-        "Based on these characteristics, provide a list of the top 3 most likely bird species.\n"
-        "Respond ONLY with the species names separated by commas, in the format:\n"
-        "Species1, Species2, Species3\n"
-        "Do not include any extra text, explanations, or punctuation."
+        f"Consider these bird characteristics: {descriptors}. "
+        "Please analyze and suggest the top 3 most likely bird species. "
+        "Respond only with the species names separated by commas."
     )
-
+    
     max_retries = 5
     retries = 0
-
+    
     while retries < max_retries:  # Retry up to max_retries times
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4",
+                model="gpt-3.5-turbo",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an ornithologist with deep expertise in bird species. "
-                            "When given bird characteristics, you respond ONLY with the species names, "
-                            "nothing else."
-                        )
-                    },
+                    {"role": "system", "content": "You are an ornithologist with deep expertise in bird species."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=50,
-                temperature=0,  # Set to 0 for deterministic output
+                max_tokens=100,
+                temperature=0.7,  # Encourage diverse but reasonable guesses
             )
             predicted_species = response['choices'][0]['message']['content'].strip()
-
-            # Use regex to extract species names, ensuring we only get words and spaces
-            species_list = re.findall(r'[A-Za-z][A-Za-z\s\-]*[A-Za-z]', predicted_species)
-            species_list = [species.strip() for species in species_list if len(species.strip()) > 2]
-
-            if len(species_list) >= 1:
-                return species_list[:3]  # Return up to top 3 species
+            
+            # Split the response into a list of species
+            species_list = [species.strip() for species in predicted_species.split(",")]
+            
+            # Validate each species name in the list
+            valid_species = []
+            for species in species_list:
+                # Remove unwanted characters but allow hyphens and apostrophes
+                species_clean = re.sub(r"[^A-Za-z\s\-\']", "", species)
+                species_clean = species_clean.strip()
+                if species_clean and len(species_clean) > 2:
+                    valid_species.append(species_clean)
+            
+            if len(valid_species) >= 1:
+                return valid_species
             else:
                 print(f"Invalid response: '{predicted_species}'. Retrying...")
                 retries += 1
-                time.sleep(2)
-        except openai.error.RateLimitError as e:
-            print(f"Rate limit error encountered: {e}")
-            time.sleep(20)  # Wait before retrying
-            retries += 1
+                time.sleep(5)
         except openai.error.APIError as e:
-            print(f"APIError encountered: {e}. Retrying...")
-            time.sleep(5)  # Wait before retrying
             retries += 1
+            print(f"APIError encountered: {e}. Retrying ({retries}/{max_retries})...")
+            time.sleep(5)
         except Exception as e:
-            print(f"An unexpected error occurred: {e}. Skipping this descriptor.")
+            retries += 1
+            print(f"An error occurred: {e}. Skipping this descriptor.")
             return ["Error"]
-
+    
     print("Max retries reached. Skipping this descriptor.")
     return ["Error"]
 
@@ -86,19 +82,15 @@ for index, row in df.iterrows():
     true_species = row['bird_species']
     descriptors = row['sentences']
     predicted_species_list = predict_species(descriptors)
-
+    
     # Check if any of the top predictions match the true species
     if is_correct_prediction(true_species, predicted_species_list):
         results.append([true_species, "Correct"])
     else:
         results.append([true_species, ", ".join(predicted_species_list)])
 
-    # Optional: Print progress every 10 iterations
-    if (index + 1) % 10 == 0:
-        print(f"Processed {index + 1}/{len(df)} entries.")
-
 # Save the results to a new CSV file
-output_csv_path = f'/root/.ipython/WegnerThesis/data/generated_data/threshold_{threshold}_LLM_predictions_binned.csv'
+output_csv_path = f'/root/.ipython/WegnerThesis/data/generated_data/threshold_{threshold}_LLM_predictions.csv'
 results_df = pd.DataFrame(results, columns=['True Species', 'Predicted Species'])
 results_df.to_csv(output_csv_path, index=False)
 
