@@ -1,0 +1,51 @@
+True Animal,Predicted Animal,Correct
+antelope,bighorn sheep,False
+grizzly bear,black bear,False
+killer whale,killer whale,True
+beaver,beaver,True
+dalmatian,dalmatian,True
+persian cat,ferret,False
+horse,horse,True
+german shepherd,cheetah,False
+blue whale,blue whale,True
+siamese cat,domestic cat,False
+skunk,skunk,True
+mole,mole,True
+tiger,tiger,True
+hippopotamus,hippopotamus,True
+leopard,leopard,True
+moose,bison,False
+spider monkey,squirrel,False
+humpback whale,blue whale,False
+elephant,elephant,True
+gorilla,gorilla,True
+ox,buffalo,False
+fox,red fox,False
+sheep,sheep,True
+seal,seal,True
+chimpanzee,chimpanzee,True
+hamster,guinea pig,False
+squirrel,squirrel,True
+rhinoceros,african elephant,False
+rabbit,rabbit,True
+bat,bat,True
+giraffe,giraffe,True
+wolf,wolf,True
+chihuahua,ferret,False
+rat,badger,False
+weasel,weasel,True
+otter,sea otter,False
+buffalo,american bison,False
+zebra,zebra,True
+giant panda,giant panda,True
+deer,giraffe,False
+bobcat,leopard,False
+pig,pig,True
+lion,lion,True
+mouse,european rabbit,False
+polar bear,polar bear,True
+collie,coyote,False
+walrus,walrus,True
+raccoon,raccoon,True
+cow,cow,True
+dolphin,dolphin,True
