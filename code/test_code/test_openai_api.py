@@ -1,20 +1,26 @@
+# test_openai_connection.py
 import openai
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load the API key from the .env file
+load_dotenv('/root/.ipython/WegnerThesis/.env')
+api_key = os.getenv("OPENAI_API_KEY")
 
-# Set up your OpenAI API key securely
-openai.api_key = os.getenv('OPENAI_API_KEY')
+# Set up the API key
+openai.api_key = api_key
 
-# Test if the API key is loaded correctly
-print(f"API Key Loaded: {openai.api_key[:4]}...")
-
-# Test making an API request
 try:
-    response = openai.Model.list()
-    print("API request successful.")
-    print("Available models:", response["data"])
+    # Make a simple API call to test the connection
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello, OpenAI!"}]
+    )
+    print("API connection successful!")
+    print("Response:", response.choices[0].message['content'])
+except openai.error.AuthenticationError:
+    print("Authentication error: Check your API key.")
+except openai.error.RateLimitError:
+    print("Rate limit error: You may have exceeded your quota.")
 except Exception as e:
-    print(f"API request failed: {e}")
+    print(f"An error occurred: {e}")
