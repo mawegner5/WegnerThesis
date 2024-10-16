@@ -25,14 +25,12 @@ attributes_df = pd.read_csv(attributes_file, sep='\t', header=None, names=['attr
 attributes_df['attribute_name'] = attributes_df['attribute_name'].str.lower()
 
 # List of non-visual attributes to exclude
-# List of non-visual attributes to exclude
 non_visual_attributes = [
     'domestic', 'smelly', 'slow', 'fast', 'hops', 'tunnels', 'strong', 'weak',
-    'active', 'inactive', 'skimmer', 'stalker', 'scavenger', 'timid', 'smart', 
-    'nestspot', 'fierce', 'nocturnal', 'hibernate',
-    'agility', 'muscle', 'forager', 'grazer', 'hunter'
+    'active', 'inactive', 'skimmer', 'stalker', 'scavenger', 'timid', 'smart',
+    'group', 'solitary', 'nestspot', 'nocturnal', 'hibernate',
+    'agility', 'forager', 'grazer', 'hunter'
 ]
-
 
 # Remove duplicates in case there are any
 non_visual_attributes = list(set(non_visual_attributes))
@@ -49,16 +47,10 @@ predicate_matrix.index = classes_df['class_name']
 visual_predicate_matrix = predicate_matrix[visual_attributes_df['attribute_name']]
 
 # Function to interact with the OpenAI API to predict the animal species
-def predict_animal(descriptors):
-    prompt = (
-        f"Based on the following visual characteristics: {descriptors}\n"
-        "Please provide the most likely animal species.\n"
-        "Respond ONLY with the animal name."
-    )
-    
+def predict_animal(prompt):
     max_retries = 5
     retries = 0
-    
+
     while retries < max_retries:
         try:
             response = openai.ChatCompletion.create(
@@ -93,19 +85,18 @@ def predict_animal(descriptors):
     print("Max retries reached. Skipping this descriptor.")
     return "Error"
 
-# Initialize results lists
+# Initialize results list
 results = []
-descriptors_list = []
 
 # Iterate over each animal
 for index, animal in enumerate(classes_df['class_name']):
     # Get the attribute values for this animal
     attributes = visual_predicate_matrix.loc[animal]
-    
+
     # Get attributes that are 1 and 0
     positive_attributes = attributes[attributes == 1].index.tolist()
     negative_attributes = attributes[attributes == 0].index.tolist()
-    
+
     # Generate descriptors
     descriptors = ''
     if positive_attributes:
@@ -113,26 +104,23 @@ for index, animal in enumerate(classes_df['class_name']):
     if negative_attributes:
         descriptors += f". It is not {', '.join(negative_attributes)}"
     descriptors += '.'
-    
-    # Save the descriptors along with the animal name
-    descriptors_list.append([animal, descriptors])
-    
+
+    # Build the prompt
+    prompt = (
+        f"Based on the following visual characteristics: {descriptors}\n"
+        "Please provide the most likely animal species.\n"
+        "Respond ONLY with the animal name."
+    )
+
     # Now, use the LLM to predict the animal
-    predicted_animal = predict_animal(descriptors)
+    predicted_animal = predict_animal(prompt)
     print(f"True Animal: {animal}, Predicted Animal: {predicted_animal}")
-    
+
     # Append to results
-    results.append([animal, predicted_animal])
+    results.append([animal, descriptors, prompt, predicted_animal])
 
-# Create DataFrame for descriptors
-descriptors_df = pd.DataFrame(descriptors_list, columns=['Animal', 'Descriptors'])
-
-# Save the descriptors to a CSV file
-descriptors_csv_path = os.path.join(data_dir, 'visual_descriptors.csv')
-descriptors_df.to_csv(descriptors_csv_path, index=False)
-
-# Create a DataFrame with results
-results_df = pd.DataFrame(results, columns=['True Animal', 'Predicted Animal'])
+# Create DataFrame for results
+results_df = pd.DataFrame(results, columns=['True Animal', 'Descriptors', 'Prompt', 'Predicted Animal'])
 
 # Calculate accuracy
 results_df['Correct'] = results_df.apply(lambda row: row['True Animal'] == row['Predicted Animal'], axis=1)
@@ -140,5 +128,5 @@ accuracy = results_df['Correct'].mean() * 100
 print(f"Accuracy: {accuracy:.2f}%")
 
 # Save the results to a CSV file
-results_csv_path = os.path.join(data_dir, 'visual_predictions.csv')
+results_csv_path = os.path.join(data_dir, 'visual_predictions_with_prompts.csv')
 results_df.to_csv(results_csv_path, index=False)
