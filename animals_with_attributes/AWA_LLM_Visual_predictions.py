@@ -54,7 +54,7 @@ def predict_animal(prompt):
     while retries < max_retries:
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4",  # Use "gpt-3.5-turbo" if you don't have access to GPT-4
+                model="gpt-4o",  # Use "gpt-3.5-turbo" if you don't have access to GPT-4
                 messages=[
                     {
                         "role": "system",
