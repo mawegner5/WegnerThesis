@@ -1,5 +1,9 @@
-# Ignore data directory
+# Ignore data directories
 data/
+dataset/
+datasets/
+input/
+inputs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -16,6 +20,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+env/
+venv/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -38,8 +44,6 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -52,12 +56,105 @@ cython_debug/
 # IDE files
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
 
 # Logs
 *.log
+logs/
+log/
+*.out
 
 # Other temporary files
 *.tmp
 *.temp
 ~$*
+*.bak
+
+# Environment variables
 .env
+.env.*
+
+# Machine Learning artifacts
+model/
+models/
+*.h5
+*.hdf5
+*.ckpt
+checkpoint/
+checkpoints/
+*.ckpt.*
+*.pth
+*.pt
+*.onnx
+
+# Outputs
+output/
+outputs/
+results/
+runs/
+
+# Datasets and large files
+*.csv
+*.tsv
+*.zip
+*.tar.gz
+*.tar
+*.7z
+*.rar
+*.npz
+*.npy
+*.pickle
+*.pkl
+data.zip
+dataset.zip
+
+# Ignore the animals_with_attributes dataset directories and large files
+animals_with_attributes/
+animals_with_attributes/**/__MACOSX/
+animals_with_attributes/**/Animals_with_Attributes2/
+animals_with_attributes/**/Animals_with_Attributes2-2/
+animals_with_attributes/**/JPEGImages/
+animals_with_attributes/**/*.jpg
+animals_with_attributes/**/*.jpeg
+animals_with_attributes/**/*.png
+animals_with_attributes/**/*.gif
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.o
+*.a
+*.dSYM/
+
+# Anaconda
+.conda/
+
+# Spyder project settings
+.spyproject/
+
+# JetBrains IDEs
+*.iws
+*.iml
+*.ipr
+
+# Emacs
+*~
+.*~
+
+# Visual Studio Code
+.vscode/
+
+# MacOS
+.DS_Store
+
+# Ignore the unzipped code directory if not needed
+IDA_2023ICLR-main/
+
+# Ignore the ZIP file
+IDA_2023ICLR-main.zip
+
+# Ignore the Python script used to unzip (if not needed)
+unzip_script.py
