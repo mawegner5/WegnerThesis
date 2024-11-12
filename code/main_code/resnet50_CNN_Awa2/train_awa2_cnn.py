@@ -1,5 +1,4 @@
 import os
-import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,8 +13,6 @@ from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.schedulers import ASHAScheduler
 from ray.air import session
-from ray.tune.search.basic_variant import BasicVariantGenerator
-from ray.tune.search.concurrency_limiter import ConcurrencyLimiter
 
 # ----------------------------
 # Paths and Hyperparameters
@@ -274,7 +271,7 @@ def train_cnn(config):
             "train_jaccard": train_jaccard
         })
 
-# Adjust per-trial resources to use all available resources
+# Use all available resources for each trial
 train_cnn_with_resources = tune.with_resources(train_cnn, {"cpu": 32, "gpu": 1})
 
 # Hyperparameter search space
@@ -297,12 +294,6 @@ reporter = CLIReporter(
     metric_columns=["val_loss", "val_jaccard", "train_loss", "train_jaccard", "training_iteration"]
 )
 
-# Limit concurrency to one trial at a time
-search_alg = ConcurrencyLimiter(
-    BasicVariantGenerator(),
-    max_concurrent=1
-)
-
 # ----------------------------
 # Run Hyperparameter Tuning
 # ----------------------------
@@ -319,7 +310,7 @@ if __name__ == '__main__':
             mode="min",
             scheduler=scheduler,
             num_samples=10,
-            search_alg=search_alg,  # Add the concurrency limiter
+            max_concurrent_trials=1,  # Limit concurrency to one trial at a time
         ),
         run_config=ray.air.RunConfig(
             name="cnn_hyperparameter_tuning",
