@@ -152,12 +152,14 @@ model = model.to(device)
 model.eval()
 
 # ----------------------------
-# Run Inference and Calculate Absolute Errors
+# Run Inference and Collect Predictions
 # ----------------------------
 print("Running inference on validation set...")
 attribute_names = full_dataset.attributes  # List of attribute names
 
-abs_errors = []  # To store absolute errors
+all_probs = []  # To store predicted probabilities
+all_binarized_preds = []  # To store binarized predictions
+all_true_labels = []  # To store true labels
 val_image_names = []
 val_class_names = []
 
@@ -165,30 +167,36 @@ with torch.no_grad():
     for images, labels, img_names, class_names in tqdm(val_loader, desc="Processing"):
         images = images.to(device)
         outputs = model(images)
-        outputs = torch.sigmoid(outputs).cpu()
+        probs = torch.sigmoid(outputs).cpu()  # Apply sigmoid to get probabilities between 0 and 1
         labels = labels.cpu()
 
         # Binarize outputs at threshold 0.5
-        binarized_outputs = (outputs > 0.5).float()
+        binarized_outputs = (probs > 0.5).float()
 
-        # Calculate absolute errors
-        abs_error = torch.abs(binarized_outputs - labels)
-        abs_errors.append(abs_error)
+        all_probs.append(probs)
+        all_binarized_preds.append(binarized_outputs)
+        all_true_labels.append(labels)
 
         val_image_names.extend(img_names)
         val_class_names.extend(class_names)
 
-# Stack all absolute errors
-abs_errors = torch.cat(abs_errors, dim=0)  # Shape: (num_samples, num_attributes)
+# Concatenate all batches
+all_probs = torch.cat(all_probs, dim=0)  # Shape: (num_samples, num_attributes)
+all_binarized_preds = torch.cat(all_binarized_preds, dim=0)
+all_true_labels = torch.cat(all_true_labels, dim=0)
 
 # ----------------------------
-# Save Absolute Errors to CSV
+# Save Predictions to CSV
 # ----------------------------
-output_csv_path = os.path.join(output_dir, 'validation_attribute_errors.csv')
-print(f"Saving attribute errors to {output_csv_path}...")
+output_csv_path = os.path.join(output_dir, 'validation_predictions.csv')
+print(f"Saving predictions to {output_csv_path}...")
 
 # Prepare CSV header
-header = ['ImageName', 'ClassName'] + attribute_names
+header = ['ImageName', 'ClassName']
+for attr_name in attribute_names:
+    header.append(f"{attr_name}_Prob")
+    header.append(f"{attr_name}_Pred")
+    header.append(f"{attr_name}_True")
 
 # Write to CSV
 with open(output_csv_path, 'w', newline='') as csvfile:
@@ -197,8 +205,12 @@ with open(output_csv_path, 'w', newline='') as csvfile:
     for idx in range(len(val_image_names)):
         img_name = val_image_names[idx]
         class_name = val_class_names[idx]
-        errors = abs_errors[idx].int().numpy().tolist()
-        row = [img_name, class_name] + errors
+        probs = all_probs[idx].numpy()
+        binarized_preds = all_binarized_preds[idx].int().numpy()
+        true_labels = all_true_labels[idx].int().numpy()
+        row = [img_name, class_name]
+        for prob, pred, true_label in zip(probs, binarized_preds, true_labels):
+            row.extend([f"{prob:.4f}", pred, true_label])
         csvwriter.writerow(row)
 
 print("Done.")
