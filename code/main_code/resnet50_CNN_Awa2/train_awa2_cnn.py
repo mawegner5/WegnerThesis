@@ -1,4 +1,5 @@
 import os
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,6 +13,9 @@ import ray
 from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.schedulers import ASHAScheduler
+from ray.air import session
+from ray.tune.search.basic_variant import BasicVariantGenerator
+from ray.tune.search.concurrency_limiter import ConcurrencyLimiter
 
 # ----------------------------
 # Paths and Hyperparameters
@@ -20,9 +24,7 @@ from ray.tune.schedulers import ASHAScheduler
 data_dir = '/root/.ipython/WegnerThesis/animals_with_attributes/animals_w_att_data/'
 train_dir = os.path.join(data_dir, 'train')
 val_dir = os.path.join(data_dir, 'validate')
-test_dir = os.path.join(data_dir, 'test')
-train_classes_txt = os.path.join(data_dir, 'Animals_with_Attributes2', 'trainclasses.txt')
-test_classes_txt = os.path.join(data_dir, 'Animals_with_Attributes2', 'testclasses.txt')
+classes_txt_path = os.path.join(data_dir, 'Animals_with_Attributes2', 'classes.txt')
 predicates_txt_path = os.path.join(data_dir, 'Animals_with_Attributes2', 'predicates.txt')
 attributes_path = os.path.join(data_dir, 'Animals_with_Attributes2', 'predicate-matrix-binary.txt')
 output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc/'
@@ -40,8 +42,19 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Custom Dataset Class
 # ----------------------------
 class AWA2Dataset(Dataset):
-    def __init__(self, root_dirs, predicates_txt_path, attributes_path, transform=None):
+    def __init__(self, root_dir, classes_txt_path, predicates_txt_path, attributes_path, transform=None):
+        self.root_dir = root_dir
         self.transform = transform
+
+        # Load class names and indices
+        self.class_to_idx = {}
+        with open(classes_txt_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    idx = int(parts[0]) - 1  # Indices start from 1 in classes.txt
+                    cls_name = parts[1].replace('+', ' ')
+                    self.class_to_idx[cls_name] = idx
 
         # Load attribute names
         self.attributes = []
@@ -58,26 +71,22 @@ class AWA2Dataset(Dataset):
         # Collect all image paths and labels
         self.image_paths = []
         self.labels = []
-        for root_dir in root_dirs:
-            class_names = os.listdir(root_dir)
-            for cls_name in class_names:
-                cls_dir = os.path.join(root_dir, cls_name)
-                if not os.path.isdir(cls_dir):
-                    continue
-                # Get class index from class name
-                class_idx = self.get_class_index(cls_name)
-                label = self.attribute_matrix[class_idx]
-                for img_name in os.listdir(cls_dir):
-                    img_path = os.path.join(cls_dir, img_name)
-                    if os.path.isfile(img_path):
-                        self.image_paths.append(img_path)
-                        self.labels.append(label)
-
-    def get_class_index(self, class_name):
-        # Class names in attribute matrix are sorted alphabetically
-        class_names_sorted = sorted(os.listdir(os.path.join(data_dir, 'Animals_with_Attributes2', 'JPEGImages')))
-        class_idx = class_names_sorted.index(class_name)
-        return class_idx
+        class_names = os.listdir(self.root_dir)
+        for cls_name in class_names:
+            cls_dir = os.path.join(self.root_dir, cls_name)
+            if not os.path.isdir(cls_dir):
+                continue
+            # Get class index
+            if cls_name not in self.class_to_idx:
+                print(f"Class name '{cls_name}' not found in classes.txt")
+                continue
+            class_idx = self.class_to_idx[cls_name]
+            label = self.attribute_matrix[class_idx]
+            for img_name in os.listdir(cls_dir):
+                img_path = os.path.join(cls_dir, img_name)
+                if os.path.isfile(img_path):
+                    self.image_paths.append(img_path)
+                    self.labels.append(label)
 
     def __len__(self):
         return len(self.image_paths)
@@ -87,7 +96,8 @@ class AWA2Dataset(Dataset):
         try:
             image = Image.open(img_path).convert('RGB')
         except Exception as e:
-            # Skip corrupted images
+            print(f"Error loading image {img_path}: {e}")
+            # Use a blank image in case of error
             image = Image.new('RGB', (224, 224))
         label = self.labels[idx]
         label = torch.from_numpy(label).float()
@@ -98,29 +108,6 @@ class AWA2Dataset(Dataset):
 # ----------------------------
 # Data Preparation
 # ----------------------------
-# Read class names from the provided files
-def read_classes(file_path):
-    with open(file_path, 'r') as f:
-        classes = [line.strip().replace('+', ' ') for line in f.readlines()]
-    return classes
-
-# Training and test classes
-train_classes_full = read_classes(train_classes_txt)
-test_classes = read_classes(test_classes_txt)
-
-# From the training classes, select 5 classes for validation
-import random
-random.seed(42)  # For reproducibility
-random.shuffle(train_classes_full)
-
-val_classes = train_classes_full[:5]     # First 5 classes for validation
-train_classes = train_classes_full[5:]   # Remaining 35 classes for training
-
-print(f"Total training classes: {len(train_classes_full)}")
-print(f"Training classes ({len(train_classes)}): {train_classes}")
-print(f"Validation classes ({len(val_classes)}): {val_classes}")
-print(f"Test classes ({len(test_classes)}): {test_classes}")
-
 # Define transforms
 data_transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -133,12 +120,15 @@ data_transform = transforms.Compose([
 ])
 
 # Create datasets
-train_dataset = AWA2Dataset(root_dirs=[os.path.join(train_dir, cls) for cls in train_classes],
+print("Preparing datasets...")
+train_dataset = AWA2Dataset(root_dir=train_dir,
+                            classes_txt_path=classes_txt_path,
                             predicates_txt_path=predicates_txt_path,
                             attributes_path=attributes_path,
                             transform=data_transform)
 
-val_dataset = AWA2Dataset(root_dirs=[os.path.join(val_dir, cls) for cls in val_classes],
+val_dataset = AWA2Dataset(root_dir=val_dir,
+                          classes_txt_path=classes_txt_path,
                           predicates_txt_path=predicates_txt_path,
                           attributes_path=attributes_path,
                           transform=data_transform)
@@ -146,14 +136,14 @@ val_dataset = AWA2Dataset(root_dirs=[os.path.join(val_dir, cls) for cls in val_c
 print(f"Number of training samples: {len(train_dataset)}")
 print(f"Number of validation samples: {len(val_dataset)}")
 
-# Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
-
 # ----------------------------
 # Hyperparameter Tuning with Ray Tune
 # ----------------------------
-def train_cnn(config, checkpoint_dir=None):
+def train_cnn(config):
+    # Create data loaders with num_workers=0
+    train_loader = DataLoader(train_dataset, batch_size=int(config["batch_size"]), shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=int(config["batch_size"]), shuffle=False, num_workers=0)
+
     # Initialize model
     model = models.resnet50(pretrained=False)
     num_features = model.fc.in_features
@@ -168,24 +158,31 @@ def train_cnn(config, checkpoint_dir=None):
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=int(config["step_size"]), gamma=config["gamma"])
 
     # Load checkpoint if available
-    if checkpoint_dir:
-        checkpoint = torch.load(os.path.join(checkpoint_dir, "checkpoint.pt"))
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        epoch_start = checkpoint["epoch"] + 1
-        best_val_loss = checkpoint["best_val_loss"]
-        trigger_times = checkpoint["trigger_times"]
+    checkpoint = session.get_checkpoint()
+    if checkpoint:
+        with checkpoint.as_directory() as checkpoint_dir:
+            checkpoint_path = os.path.join(checkpoint_dir, "checkpoint.pt")
+            state = torch.load(checkpoint_path)
+            model.load_state_dict(state["model_state_dict"])
+            optimizer.load_state_dict(state["optimizer_state_dict"])
+            scheduler.load_state_dict(state["scheduler_state_dict"])
+            epoch_start = state["epoch"] + 1
+            best_val_loss = state["best_val_loss"]
+            trigger_times = state["trigger_times"]
     else:
         epoch_start = 1
         best_val_loss = float('inf')
         trigger_times = 0
 
     for epoch in range(epoch_start, num_epochs + 1):
+        print(f"\nEpoch [{epoch}/{num_epochs}]")
         # Training Phase
         model.train()
         running_loss = 0.0
-        for images, labels in train_loader:
+        all_outputs = []
+        all_targets = []
+
+        for images, labels in tqdm(train_loader, desc="Training", leave=False):
             images = images.to(device)
             labels = labels.to(device)
 
@@ -198,15 +195,29 @@ def train_cnn(config, checkpoint_dir=None):
 
             running_loss += loss.item() * images.size(0)
 
+            # Collect outputs and targets for metric calculation
+            outputs = torch.sigmoid(outputs).detach().cpu()
+            labels = labels.cpu()
+            all_outputs.append(outputs)
+            all_targets.append(labels)
+
         epoch_loss = running_loss / len(train_dataset)
+
+        # Calculate Jaccard Score for training
+        all_outputs = torch.cat(all_outputs)
+        all_targets = torch.cat(all_targets)
+        binarized_outputs = (all_outputs > 0.5).float()
+        train_jaccard = jaccard_score(all_targets.numpy(), binarized_outputs.numpy(), average='samples')
+
+        print(f"Training Loss: {epoch_loss:.4f}, Training Jaccard Score: {train_jaccard:.4f}")
 
         # Validation Phase
         model.eval()
         val_running_loss = 0.0
-        val_all_targets = []
         val_all_outputs = []
+        val_all_targets = []
         with torch.no_grad():
-            for images, labels in val_loader:
+            for images, labels in tqdm(val_loader, desc="Validation", leave=False):
                 images = images.to(device)
                 labels = labels.to(device)
 
@@ -216,16 +227,18 @@ def train_cnn(config, checkpoint_dir=None):
 
                 outputs = torch.sigmoid(outputs).cpu()
                 labels = labels.cpu()
-                val_all_outputs.extend(outputs)
-                val_all_targets.extend(labels)
+                val_all_outputs.append(outputs)
+                val_all_targets.append(labels)
 
         val_epoch_loss = val_running_loss / len(val_dataset)
 
-        # Calculate Jaccard Score
-        val_all_outputs = torch.stack(val_all_outputs)
-        val_all_targets = torch.stack(val_all_targets)
+        # Calculate Jaccard Score for validation
+        val_all_outputs = torch.cat(val_all_outputs)
+        val_all_targets = torch.cat(val_all_targets)
         val_binarized_outputs = (val_all_outputs > 0.5).float()
         val_jaccard = jaccard_score(val_all_targets.numpy(), val_binarized_outputs.numpy(), average='samples')
+
+        print(f"Validation Loss: {val_epoch_loss:.4f}, Validation Jaccard Score: {val_jaccard:.4f}")
 
         # Update scheduler
         scheduler.step()
@@ -235,7 +248,7 @@ def train_cnn(config, checkpoint_dir=None):
             best_val_loss = val_epoch_loss
             trigger_times = 0
             # Save checkpoint
-            with tune.checkpoint_dir(epoch) as checkpoint_dir:
+            with tune.checkpoint_dir(step=epoch) as checkpoint_dir:
                 path = os.path.join(checkpoint_dir, "checkpoint.pt")
                 torch.save({
                     "model_state_dict": model.state_dict(),
@@ -245,14 +258,24 @@ def train_cnn(config, checkpoint_dir=None):
                     "best_val_loss": best_val_loss,
                     "trigger_times": trigger_times
                 }, path)
+            print("Validation loss decreased. Saving model...")
         else:
             trigger_times += 1
+            print(f"EarlyStopping counter: {trigger_times} out of {patience}")
             if trigger_times >= patience:
                 print("Early stopping triggered.")
                 break
 
         # Send metrics to Tune
-        tune.report(val_loss=val_epoch_loss, val_jaccard=val_jaccard)
+        session.report({
+            "val_loss": val_epoch_loss,
+            "val_jaccard": val_jaccard,
+            "train_loss": epoch_loss,
+            "train_jaccard": train_jaccard
+        })
+
+# Adjust per-trial resources to use all available resources
+train_cnn_with_resources = tune.with_resources(train_cnn, {"cpu": 32, "gpu": 1})
 
 # Hyperparameter search space
 config = {
@@ -265,52 +288,69 @@ config = {
 
 # Scheduler and Reporter for Ray Tune
 scheduler = ASHAScheduler(
-    metric="val_loss",
-    mode="min",
     max_t=num_epochs,
     grace_period=10,
     reduction_factor=2
 )
 
 reporter = CLIReporter(
-    metric_columns=["val_loss", "val_jaccard", "training_iteration"]
+    metric_columns=["val_loss", "val_jaccard", "train_loss", "train_jaccard", "training_iteration"]
+)
+
+# Limit concurrency to one trial at a time
+search_alg = ConcurrencyLimiter(
+    BasicVariantGenerator(),
+    max_concurrent=1
 )
 
 # ----------------------------
 # Run Hyperparameter Tuning
 # ----------------------------
-ray.init()
+if __name__ == '__main__':
+    # Initialize Ray
+    ray.init()
 
-result = tune.run(
-    train_cnn,
-    resources_per_trial={"cpu": 4, "gpu": 1},
-    config=config,
-    num_samples=10,
-    scheduler=scheduler,
-    progress_reporter=reporter,
-    local_dir=output_dir,
-    name="cnn_hyperparameter_tuning"
-)
+    print("Starting hyperparameter tuning with Ray Tune...")
+    tuner = tune.Tuner(
+        train_cnn_with_resources,
+        param_space=config,
+        tune_config=tune.TuneConfig(
+            metric="val_loss",
+            mode="min",
+            scheduler=scheduler,
+            num_samples=10,
+            search_alg=search_alg,  # Add the concurrency limiter
+        ),
+        run_config=ray.air.RunConfig(
+            name="cnn_hyperparameter_tuning",
+            local_dir=output_dir,
+            progress_reporter=reporter,
+        )
+    )
 
-# Get the best trial
-best_trial = result.get_best_trial("val_loss", "min", "last")
-print(f"Best trial config: {best_trial.config}")
-print(f"Best trial final validation loss: {best_trial.last_result['val_loss']}")
-print(f"Best trial final validation Jaccard score: {best_trial.last_result['val_jaccard']}")
+    results = tuner.fit()
 
-# Load the best model
-best_checkpoint_dir = best_trial.checkpoint.value
-model = models.resnet50(pretrained=False)
-num_features = model.fc.in_features
-model.fc = nn.Linear(num_features, num_attributes)
-model = model.to(device)
+    # Get the best result
+    best_result = results.get_best_result(metric="val_loss", mode="min")
+    print(f"Best trial config: {best_result.config}")
+    print(f"Best trial final validation loss: {best_result.metrics['val_loss']}")
+    print(f"Best trial final validation Jaccard score: {best_result.metrics['val_jaccard']}")
 
-checkpoint = torch.load(os.path.join(best_checkpoint_dir, "checkpoint.pt"))
-model.load_state_dict(checkpoint["model_state_dict"])
+    # Load the best model
+    best_checkpoint = best_result.checkpoint
+    with best_checkpoint.as_directory() as checkpoint_dir:
+        model = models.resnet50(pretrained=False)
+        num_features = model.fc.in_features
+        model.fc = nn.Linear(num_features, num_attributes)
+        model = model.to(device)
 
-# Save the best model
-torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
-print(f"Best model saved to {os.path.join(output_dir, 'best_model.pth')}")
+        checkpoint_path = os.path.join(checkpoint_dir, "checkpoint.pt")
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
 
-# Shutdown Ray
-ray.shutdown()
+    # Save the best model
+    torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
+    print(f"Best model saved to {os.path.join(output_dir, 'best_model.pth')}")
+
+    # Shutdown Ray
+    ray.shutdown()
