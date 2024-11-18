@@ -11,26 +11,68 @@ import copy
 from sklearn.metrics import classification_report, confusion_matrix, jaccard_score
 import matplotlib.pyplot as plt
 import datetime
-from tqdm import tqdm  # Progress bar
+from tqdm import tqdm  # For progress bars
 
-# Define data directories
+# --------------------------
+# User-Modifiable Parameters
+# --------------------------
+
+# Data directories
 data_dir = '/root/.ipython/WegnerThesis/animals_with_attributes/animals_w_att_data'
 train_dir = os.path.join(data_dir, 'train')
 val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
+# Model configuration
+model_name = 'efficientnet_b0'  # Options: 'efficientnet_b0' to 'efficientnet_b7'
+num_epochs = 10                 # Adjust as needed
+batch_size = 16                 # Adjust based on your GPU memory
+learning_rate = 0.01
+momentum = 0.9
+num_workers = 4                 # Number of worker processes for data loading
+iteration = 1                   # For naming outputs
+
+# Output directory for saving predictions and reports
+output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
+# Input size for different EfficientNet models
+input_sizes = {
+    'efficientnet_b0': 224,
+    'efficientnet_b1': 240,
+    'efficientnet_b2': 260,
+    'efficientnet_b3': 300,
+    'efficientnet_b4': 380,
+    'efficientnet_b5': 456,
+    'efficientnet_b6': 528,
+    'efficientnet_b7': 600,
+}
+
+# Set the input size based on the model
+input_size = input_sizes[model_name]
+
+# Device configuration
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+# --------------------------
+#       End of User Settings
+# --------------------------
+
 # Data transformations (no augmentation for initial runs)
 data_transforms = {
     'train': transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((input_size, input_size)),
         transforms.ToTensor(),
         # Normalization values are standard for ImageNet
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
     ]),
     'validate': transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((input_size, input_size)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
     ]),
 }
 
@@ -44,31 +86,48 @@ image_datasets = {
 train_targets = [label for _, label in image_datasets['train'].imgs]
 class_counts = np.bincount(train_targets)
 class_weights = 1. / class_counts
-class_weights = torch.FloatTensor(class_weights)
+class_weights = torch.FloatTensor(class_weights).to(device)
 
 # Data loaders
-batch_size = 16
-
 dataloaders = {
-    'train': DataLoader(image_datasets['train'], batch_size=batch_size, shuffle=True, num_workers=1),
-    'validate': DataLoader(image_datasets['validate'], batch_size=batch_size, shuffle=False, num_workers=1),
+    'train': DataLoader(image_datasets['train'], batch_size=batch_size,
+                        shuffle=True, num_workers=num_workers),
+    'validate': DataLoader(image_datasets['validate'], batch_size=batch_size,
+                           shuffle=False, num_workers=num_workers),
 }
 
 dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'validate']}
 class_names = image_datasets['train'].classes
 
-# Device configuration
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# Load the EfficientNet model
+from torchvision.models import (efficientnet_b0, efficientnet_b1, efficientnet_b2,
+                                efficientnet_b3, efficientnet_b4, efficientnet_b5,
+                                efficientnet_b6, efficientnet_b7)
 
-# Load ResNet50 model without pre-trained weights
-from torchvision.models import resnet50
-
-model = resnet50(weights=None)
+model = None
+if model_name == 'efficientnet_b0':
+    model = efficientnet_b0(weights=None)
+elif model_name == 'efficientnet_b1':
+    model = efficientnet_b1(weights=None)
+elif model_name == 'efficientnet_b2':
+    model = efficientnet_b2(weights=None)
+elif model_name == 'efficientnet_b3':
+    model = efficientnet_b3(weights=None)
+elif model_name == 'efficientnet_b4':
+    model = efficientnet_b4(weights=None)
+elif model_name == 'efficientnet_b5':
+    model = efficientnet_b5(weights=None)
+elif model_name == 'efficientnet_b6':
+    model = efficientnet_b6(weights=None)
+elif model_name == 'efficientnet_b7':
+    model = efficientnet_b7(weights=None)
+else:
+    raise ValueError("Invalid model name. Choose from 'efficientnet_b0' to 'efficientnet_b7'.")
 
 # Modify the final layer to match the number of classes
-num_ftrs = model.fc.in_features
+num_ftrs = model.classifier[1].in_features  # Assuming classifier is [Dropout, Linear]
 num_classes = len(class_names)
-model.fc = nn.Linear(num_ftrs, num_classes)
+model.classifier[1] = nn.Linear(num_ftrs, num_classes)
 model = model.to(device)
 
 # Define soft Jaccard loss function
@@ -93,7 +152,7 @@ class SoftJaccardLoss(nn.Module):
 criterion = SoftJaccardLoss()
 
 # Define optimizer
-optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum)
 
 # Define learning rate scheduler
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, verbose=True)
@@ -137,13 +196,8 @@ class EarlyStopping:
 # Instantiate early stopping
 early_stopping = EarlyStopping(patience=5, verbose=True)
 
-# Output directory for saving predictions and reports
-output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-
 # Training function
-def train_model(model, criterion, optimizer, scheduler, num_epochs=1):
+def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
     since = time.time()
 
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -165,7 +219,8 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=1):
             running_loss = 0.0
             running_corrects = 0
 
-            progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}", total=len(dataloaders[phase]), unit='batch')
+            progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}",
+                                total=len(dataloaders[phase]), unit='batch')
 
             # Iterate over data
             for batch_idx, (inputs, labels) in progress_bar:
@@ -242,13 +297,13 @@ def save_predictions(predictions, labels, iteration):
     # Create a DataFrame
     df = pd.DataFrame({'Predicted': predictions, 'Actual': labels})
 
-    # Map class indices to class_names
+    # Map class indices to class names
     df['Predicted_Class'] = df['Predicted'].apply(lambda x: class_names[x])
     df['Actual_Class'] = df['Actual'].apply(lambda x: class_names[x])
 
     # Generate timestamp for filename
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'predictions_iteration{iteration}_{timestamp}.csv'
+    filename = f'predictions_{model_name}_iteration{iteration}_{timestamp}.csv'
 
     # Save to specified directory
     output_path = os.path.join(output_dir, filename)
@@ -259,14 +314,14 @@ def save_predictions(predictions, labels, iteration):
     # Generate classification report
     report = classification_report(labels, predictions, target_names=class_names, output_dict=True)
     report_df = pd.DataFrame(report).transpose()
-    report_filename = f'classification_report_iteration{iteration}_{timestamp}.csv'
+    report_filename = f'classification_report_{model_name}_iteration{iteration}_{timestamp}.csv'
     report_output_path = os.path.join(output_dir, report_filename)
     report_df.to_csv(report_output_path)
     print(f'Classification report saved to {report_output_path}')
 
     # Generate confusion matrix
     cm = confusion_matrix(labels, predictions)
-    cm_filename = f'confusion_matrix_iteration{iteration}_{timestamp}.png'
+    cm_filename = f'confusion_matrix_{model_name}_iteration{iteration}_{timestamp}.png'
     cm_output_path = os.path.join(output_dir, cm_filename)
     plot_confusion_matrix(cm, class_names, cm_output_path)
     print(f'Confusion matrix saved to {cm_output_path}')
@@ -294,9 +349,6 @@ def plot_confusion_matrix(cm, class_names, output_path):
     plt.savefig(output_path)
     plt.close()
 
-# Define iteration number
-iteration = 1  # Update this accordingly for each run
-
 # Train the model
-num_epochs = 1  # Change this manually for longer runs
-model = train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs)
+if __name__ == '__main__':
+    model = train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs)

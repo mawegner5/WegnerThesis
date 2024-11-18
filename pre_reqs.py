@@ -4,6 +4,9 @@
 import os
 from pathlib import Path
 import sys
+import pandas as pd
+import numpy as np
+from PIL import Image
 
 def main():
     # ----------------------------
@@ -22,6 +25,9 @@ def main():
     train_classes_txt = os.path.join(dataset_dir, 'trainclasses.txt')
     val_classes_txt = os.path.join(dataset_dir, 'valclasses.txt')
     test_classes_txt = os.path.join(dataset_dir, 'testclasses.txt')
+    
+    # CSV file with attributes
+    csv_path = os.path.join(dataset_dir, 'predicate_matrix_with_labels.csv')
     
     # Expected Classes
     expected_classes = {
@@ -233,6 +239,106 @@ def main():
     
     # Verify 'test' directory
     verify_split_dir(test_dir, test_classes, 'Test')
+    
+    # ----------------------------
+    # Check Data Loading and Label Alignment
+    # ----------------------------
+    print("\n--- Verifying Data Loading and Label Alignment ---")
+    
+    # Load the predicate matrix with labels
+    try:
+        df_attributes = pd.read_csv(csv_path)
+        print(f"Loaded attribute CSV with shape: {df_attributes.shape}")
+    except Exception as e:
+        print(f"ERROR: Unable to load attributes CSV: {e}")
+        errors_found = True
+        sys.exit(1)
+    
+    # Create a mapping from class name to attributes
+    class_to_attributes = {}
+    for _, row in df_attributes.iterrows():
+        class_name = row['class'].strip()
+        attributes = row.drop('class').values.astype(int)
+        class_to_attributes[class_name] = attributes
+    
+    # Verify that all classes in splits have corresponding attributes
+    for split_classes, split_name in zip([train_classes, val_classes, test_classes], ['Train', 'Validate', 'Test']):
+        missing_attributes = [cls for cls in split_classes if cls not in class_to_attributes]
+        if missing_attributes:
+            print(f"ERROR: The following classes in {split_name} split do not have attributes in CSV: {missing_attributes}")
+            errors_found = True
+        else:
+            print(f"PASS: All classes in {split_name} split have corresponding attributes")
+    
+    # Now let's sample some images and verify their labels
+    def verify_data_loading(split_dir, split_classes, split_name):
+        nonlocal errors_found
+        print(f"\nSampling data from {split_name} split for verification:")
+        num_samples = 5  # Number of samples per class to verify
+        for cls in split_classes:
+            cls_dir = Path(split_dir) / cls
+            if not cls_dir.exists():
+                continue
+            image_files = [f for f in cls_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']]
+            if not image_files:
+                continue
+            samples = image_files[:num_samples]
+            for img_file in samples:
+                img_path = str(img_file)
+                try:
+                    image = Image.open(img_path).convert('RGB')
+                    image.verify()  # Verify that it is a valid image
+                    # Get the attributes for this class
+                    attributes = class_to_attributes.get(cls, None)
+                    if attributes is None:
+                        print(f"ERROR: No attributes found for class {cls}")
+                        errors_found = True
+                    else:
+                        print(f"PASS: Image {img_path} loaded successfully. Class: {cls}, Attributes: {attributes}")
+                except Exception as e:
+                    print(f"ERROR: Failed to load image {img_path}: {e}")
+                    errors_found = True
+    
+    # Verify data loading for each split
+    verify_data_loading(train_dir, train_classes, 'Train')
+    verify_data_loading(val_dir, val_classes, 'Validate')
+    verify_data_loading(test_dir, test_classes, 'Test')
+    
+    # ----------------------------
+    # Check for Class Imbalance
+    # ----------------------------
+    print("\n--- Checking for Class Imbalance ---")
+    
+    # Collect attribute counts in training data
+    attribute_counts = np.zeros(85)  # Assuming 85 attributes
+    total_images = 0
+    for cls in train_classes:
+        attributes = class_to_attributes.get(cls)
+        if attributes is None:
+            continue
+        cls_dir = Path(train_dir) / cls
+        if not cls_dir.exists():
+            continue
+        num_images = len([f for f in cls_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']])
+        attribute_counts += attributes * num_images
+        total_images += num_images
+    
+    # Print attribute distribution
+    if total_images == 0:
+        print("ERROR: No images found in training data to compute attribute distribution.")
+        errors_found = True
+    else:
+        attribute_distribution = attribute_counts / total_images
+        print("Attribute distribution in training data:")
+        for idx, freq in enumerate(attribute_distribution):
+            print(f"Attribute {idx+1}: {freq:.4f}")
+    
+    # Optionally, you can check for extremely rare or never occurring attributes
+    rare_attributes = np.where(attribute_counts < 10)[0]
+    if len(rare_attributes) > 0:
+        print(f"WARNING: The following attributes are rare (less than 10 occurrences): {rare_attributes + 1}")
+    else:
+        print("PASS: No extremely rare attributes found in training data.")
     
     # ----------------------------
     # Final Summary
