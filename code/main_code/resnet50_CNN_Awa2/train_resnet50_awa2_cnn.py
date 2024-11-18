@@ -24,13 +24,12 @@ val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
 # Model configuration
-model_name = 'efficientnet_b0'   # Options: 'efficientnet_b0' to 'efficientnet_b7'
-num_epochs = 1                   # Adjust as needed
-batch_size = 16                  # Adjust based on your GPU memory
+num_epochs = 1             # Adjust as needed
+batch_size = 16            # Adjust based on your GPU memory
 learning_rate = 0.01
 momentum = 0.9
-num_workers = 1                  # Number of worker processes for data loading
-iteration = 4                    # For naming outputs
+num_workers = 1            # Number of worker processes for data loading
+iteration = 3              # For naming outputs
 
 # Output directory for saving predictions and reports
 output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
@@ -39,21 +38,6 @@ if not os.path.exists(output_dir):
 
 # Device configuration
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-# Input size for different EfficientNet models
-input_sizes = {
-    'efficientnet_b0': 224,
-    'efficientnet_b1': 240,
-    'efficientnet_b2': 260,
-    'efficientnet_b3': 300,
-    'efficientnet_b4': 380,
-    'efficientnet_b5': 456,
-    'efficientnet_b6': 528,
-    'efficientnet_b7': 600,
-}
-
-# Set the input size based on the model
-input_size = input_sizes[model_name]
 
 # --------------------------
 #       End of User Settings
@@ -75,6 +59,7 @@ class AwA2Dataset(Dataset):
         self.phase = phase
         self.transform = transform
         self.samples = []
+        self.labels = []
         self.attributes = []
 
         # Map class names to indices
@@ -114,7 +99,7 @@ class AwA2Dataset(Dataset):
 
 # Data transformations (no augmentation for initial runs)
 data_transforms = transforms.Compose([
-    transforms.Resize((input_size, input_size)),
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
     # Normalization values are standard for ImageNet
     transforms.Normalize([0.485, 0.456, 0.406],
@@ -137,34 +122,14 @@ dataloaders = {
 
 dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
 
-# Load EfficientNet model
-from torchvision.models import (efficientnet_b0, efficientnet_b1, efficientnet_b2,
-                                efficientnet_b3, efficientnet_b4, efficientnet_b5,
-                                efficientnet_b6, efficientnet_b7)
+# Load ResNet50 model without pre-trained weights
+from torchvision.models import resnet50
 
-model = None
-if model_name == 'efficientnet_b0':
-    model = efficientnet_b0(weights=None)
-elif model_name == 'efficientnet_b1':
-    model = efficientnet_b1(weights=None)
-elif model_name == 'efficientnet_b2':
-    model = efficientnet_b2(weights=None)
-elif model_name == 'efficientnet_b3':
-    model = efficientnet_b3(weights=None)
-elif model_name == 'efficientnet_b4':
-    model = efficientnet_b4(weights=None)
-elif model_name == 'efficientnet_b5':
-    model = efficientnet_b5(weights=None)
-elif model_name == 'efficientnet_b6':
-    model = efficientnet_b6(weights=None)
-elif model_name == 'efficientnet_b7':
-    model = efficientnet_b7(weights=None)
-else:
-    raise ValueError("Invalid model name. Choose from 'efficientnet_b0' to 'efficientnet_b7'.")
+model = resnet50(weights=None)
 
 # Modify the final layer to match the number of attributes
-num_ftrs = model.classifier[1].in_features  # Assuming classifier is [Dropout, Linear]
-model.classifier[1] = nn.Linear(num_ftrs, num_attributes)
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, num_attributes)
 model = model.to(device)
 
 # Define soft Jaccard loss function
@@ -340,7 +305,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
 def save_predictions(predictions, labels, iteration):
     # Generate timestamp for filename
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'predictions_{model_name}_iteration{iteration}_{timestamp}.csv'
+    filename = f'predictions_iteration{iteration}_{timestamp}.csv'
 
     # Save to specified directory
     output_path = os.path.join(output_dir, filename)
@@ -358,7 +323,7 @@ def save_predictions(predictions, labels, iteration):
     # For multi-label classification, provide labels and target_names
     report = classification_report(labels, predictions, target_names=attribute_names, output_dict=True, zero_division=0)
     report_df = pd.DataFrame(report).transpose()
-    report_filename = f'classification_report_{model_name}_iteration{iteration}_{timestamp}.csv'
+    report_filename = f'classification_report_iteration{iteration}_{timestamp}.csv'
     report_output_path = os.path.join(output_dir, report_filename)
     report_df.to_csv(report_output_path)
     print(f'Classification report saved to {report_output_path}')
