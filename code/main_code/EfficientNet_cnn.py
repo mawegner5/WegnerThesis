@@ -30,7 +30,7 @@ batch_size = 16                  # Adjust based on your GPU memory
 learning_rate = 0.01
 momentum = 0.9
 num_workers = 1                  # Number of worker processes for data loading
-iteration = 4                    # For naming outputs
+iteration = 1                    # For naming outputs
 
 # Output directory for saving predictions and reports
 output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
@@ -235,6 +235,12 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
     best_model_wts = copy.deepcopy(model.state_dict())
     best_jaccard = 0.0
 
+    # Lists to store loss and jaccard scores
+    train_losses = []
+    val_losses = []
+    train_jaccards = []
+    val_jaccards = []
+
     for epoch in range(num_epochs):
         print(f'\nEpoch {epoch+1}/{num_epochs}')
         print('-' * 10)
@@ -302,7 +308,14 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
 
             print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
-            if phase == 'validate':
+            # Store losses and jaccards
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_jaccards.append(epoch_jaccard)
+            else:
+                val_losses.append(epoch_loss)
+                val_jaccards.append(epoch_jaccard)
+
                 scheduler.step(epoch_loss)
                 early_stopping(epoch_loss)
 
@@ -335,12 +348,15 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
     # Save validation predictions and labels to file
     save_predictions(val_predictions, val_labels, iteration)
 
+    # Plot and save training curves
+    plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, iteration)
+
     return model
 
 def save_predictions(predictions, labels, iteration):
     # Generate timestamp for filename
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'predictions_{model_name}_iteration{iteration}_{timestamp}.csv'
+    filename = f'efficient_net_predictions_{model_name}_iteration{iteration}_{timestamp}.csv'
 
     # Save to specified directory
     output_path = os.path.join(output_dir, filename)
@@ -358,23 +374,42 @@ def save_predictions(predictions, labels, iteration):
     # For multi-label classification, provide labels and target_names
     report = classification_report(labels, predictions, target_names=attribute_names, output_dict=True, zero_division=0)
     report_df = pd.DataFrame(report).transpose()
-    report_filename = f'classification_report_{model_name}_iteration{iteration}_{timestamp}.csv'
+    report_filename = f'efficient_net_classification_report_{model_name}_iteration{iteration}_{timestamp}.csv'
     report_output_path = os.path.join(output_dir, report_filename)
     report_df.to_csv(report_output_path)
     print(f'Classification report saved to {report_output_path}')
 
-def plot_jaccard_scores(predictions, labels, output_path):
-    jaccard_scores = jaccard_score(labels, predictions, average=None)
-    plt.figure(figsize=(12, 6))
-    plt.bar(attribute_names, jaccard_scores)
-    plt.xticks(rotation=90)
-    plt.xlabel('Attributes')
-    plt.ylabel('Jaccard Score')
-    plt.title('Jaccard Scores per Attribute')
-    plt.tight_layout()
-    plt.savefig(output_path)
+def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, iteration):
+    epochs = range(1, len(train_losses) + 1)
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # Plot Loss
+    plt.figure()
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss')
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss')
+    plt.title('Training and Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    loss_plot_filename = f'efficient_net_loss_plot_{model_name}_iteration{iteration}_{timestamp}.png'
+    loss_plot_path = os.path.join(output_dir, loss_plot_filename)
+    plt.savefig(loss_plot_path)
     plt.close()
-    print(f'Jaccard scores per attribute saved to {output_path}')
+    print(f'Training and validation loss plot saved to {loss_plot_path}')
+
+    # Plot Jaccard Accuracy
+    plt.figure()
+    plt.plot(epochs, train_jaccards, 'b-', label='Training Jaccard Accuracy')
+    plt.plot(epochs, val_jaccards, 'r-', label='Validation Jaccard Accuracy')
+    plt.title('Training and Validation Jaccard Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Jaccard Accuracy')
+    plt.legend()
+    acc_plot_filename = f'efficient_net_accuracy_plot_{model_name}_iteration{iteration}_{timestamp}.png'
+    acc_plot_path = os.path.join(output_dir, acc_plot_filename)
+    plt.savefig(acc_plot_path)
+    plt.close()
+    print(f'Training and validation accuracy plot saved to {acc_plot_path}')
 
 # Train the model
 if __name__ == '__main__':
