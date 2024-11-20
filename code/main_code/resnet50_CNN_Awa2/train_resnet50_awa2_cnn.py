@@ -24,17 +24,19 @@ val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
 # Model configuration
-num_epochs = 1             # Adjust as needed
-batch_size = 16            # Adjust based on your GPU memory
-learning_rate = 0.01
-momentum = 0.9
-num_workers = 1            # Number of worker processes for data loading
-iteration = 3              # For naming outputs
+num_epochs = 120            # Adjust as needed
+batch_size = 16             # Adjust based on your GPU memory
+learning_rate = 0.0001      # Reduced learning rate
+num_workers = 1             # Number of worker processes for data loading
+iteration = 5               # For naming outputs
 
 # Output directory for saving predictions and reports
 output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
+
+# Path to the model performance summary file
+performance_summary_path = os.path.join(output_dir, 'model_performance_summary.csv')
 
 # Device configuration
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -52,14 +54,13 @@ classes = attributes_df.index.tolist()
 
 num_attributes = len(attribute_names)
 
-# Custom dataset to include attributes
+# Custom dataset to include attributes and image names
 class AwA2Dataset(Dataset):
     def __init__(self, root_dir, phase, transform=None):
         self.root_dir = root_dir
         self.phase = phase
         self.transform = transform
         self.samples = []
-        self.labels = []
         self.attributes = []
 
         # Map class names to indices
@@ -82,34 +83,47 @@ class AwA2Dataset(Dataset):
 
             for img_name in os.listdir(class_dir):
                 img_path = os.path.join(class_dir, img_name)
-                self.samples.append(img_path)
+                self.samples.append((img_path, img_name))  # Store both path and name
                 self.attributes.append(class_attributes)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path = self.samples[idx]
+        img_path, img_name = self.samples[idx]
         attributes = self.attributes[idx]
         image = datasets.folder.default_loader(img_path)
         if self.transform is not None:
             image = self.transform(image)
         attributes = torch.FloatTensor(attributes)
-        return image, attributes
+        return image, attributes, img_name  # Return image name
 
-# Data transformations (no augmentation for initial runs)
-data_transforms = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    # Normalization values are standard for ImageNet
-    transforms.Normalize([0.485, 0.456, 0.406],
-                         [0.229, 0.224, 0.225])
-])
+# Data transformations with data augmentation for training
+data_transforms = {
+    'train': transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(),
+        transforms.RandomRotation(15),
+        transforms.ToTensor(),
+        # Normalization values are standard for ImageNet
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
+    ]),
+    'validate': transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        # Normalization values are standard for ImageNet
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
+    ]),
+}
 
 # Load datasets
 datasets_dict = {
-    'train': AwA2Dataset(data_dir, 'train', transform=data_transforms),
-    'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms),
+    'train': AwA2Dataset(data_dir, 'train', transform=data_transforms['train']),
+    'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms['validate']),
 }
 
 # Data loaders
@@ -132,6 +146,9 @@ num_ftrs = model.fc.in_features
 model.fc = nn.Linear(num_ftrs, num_attributes)
 model = model.to(device)
 
+# Specify the model name for saving
+model_name = 'resnet50'
+
 # Define soft Jaccard loss function
 class SoftJaccardLoss(nn.Module):
     def __init__(self):
@@ -148,15 +165,15 @@ class SoftJaccardLoss(nn.Module):
 # Instantiate the loss function
 criterion = SoftJaccardLoss()
 
-# Define optimizer
-optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum)
+# Define optimizer (switched to Adam)
+optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
-# Define learning rate scheduler
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, verbose=True)
+# Define learning rate scheduler (CosineAnnealingWarmRestarts)
+scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
 
-# Early stopping class
+# Early stopping class with increased patience
 class EarlyStopping:
-    def __init__(self, patience=5, verbose=False, delta=0):
+    def __init__(self, patience=10, verbose=False, delta=0):
         """
         Args:
             patience (int): How long to wait after last time validation loss improved.
@@ -190,8 +207,8 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
 
-# Instantiate early stopping
-early_stopping = EarlyStopping(patience=5, verbose=True)
+# Instantiate early stopping with increased patience
+early_stopping = EarlyStopping(patience=10, verbose=True)
 
 # Training function
 def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
@@ -199,6 +216,17 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
 
     best_model_wts = copy.deepcopy(model.state_dict())
     best_jaccard = 0.0
+
+    # Variables to store best validation results
+    best_val_predictions = None
+    best_val_labels = None
+    best_val_img_names = None
+
+    # Lists to store loss and jaccard scores
+    train_losses = []
+    val_losses = []
+    train_jaccards = []
+    val_jaccards = []
 
     for epoch in range(num_epochs):
         print(f'\nEpoch {epoch+1}/{num_epochs}')
@@ -212,6 +240,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
                 model.eval()   # Evaluation mode
                 val_predictions = []
                 val_labels = []
+                val_img_names = []
 
             running_loss = 0.0
             running_jaccard = 0.0
@@ -220,7 +249,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
                                 total=len(dataloaders[phase]), unit='batch')
 
             # Iterate over data
-            for batch_idx, (inputs, labels) in progress_bar:
+            for batch_idx, (inputs, labels, img_names) in progress_bar:
                 inputs = inputs.to(device)
                 labels = labels.to(device)
 
@@ -250,15 +279,14 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
                     if phase == 'validate':
                         val_predictions.append(preds_np)
                         val_labels.append(labels_np)
+                        val_img_names.extend(img_names)
 
                 # Statistics
                 running_loss += loss.item() * inputs.size(0)
 
-                # Calculate batch loss and Jaccard score
+                # Update progress bar
                 batch_loss = running_loss / ((batch_idx + 1) * inputs.size(0))
                 batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
-
-                # Update progress bar
                 progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
 
             # Calculate epoch loss and Jaccard score
@@ -267,79 +295,142 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
 
             print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
-            if phase == 'validate':
-                scheduler.step(epoch_loss)
+            # Store losses and jaccards
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_jaccards.append(epoch_jaccard)
+                scheduler.step()  # Update learning rate
+            else:
+                val_losses.append(epoch_loss)
+                val_jaccards.append(epoch_jaccard)
+
                 early_stopping(epoch_loss)
-
-                # Deep copy the model if it has the best Jaccard score
-                if epoch_jaccard > best_jaccard:
-                    best_jaccard = epoch_jaccard
-                    best_model_wts = copy.deepcopy(model.state_dict())
-
-                if early_stopping.early_stop:
-                    print("Early stopping")
-                    break
 
                 # Concatenate all predictions and labels
                 val_predictions = np.vstack(val_predictions)
                 val_labels = np.vstack(val_labels)
 
-            if early_stopping.early_stop:
-                break
+                # Update best model if validation Jaccard improved
+                if epoch_jaccard > best_jaccard:
+                    best_jaccard = epoch_jaccard
+                    best_model_wts = copy.deepcopy(model.state_dict())
+                    best_val_predictions = val_predictions
+                    best_val_labels = val_labels
+                    best_val_img_names = val_img_names
+
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
 
         if early_stopping.early_stop:
             break
 
     time_elapsed = time.time() - since
-    print(f'\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'\nTraining complete in {int(time_elapsed // 60)}m {int(time_elapsed % 60)}s')
     print(f'Best Validation Jaccard Score: {best_jaccard:.4f}')
 
     # Load best model weights
     model.load_state_dict(best_model_wts)
 
+    # Save the best model weights with CNN type in filename
+    model_save_path = os.path.join(output_dir, f'best_model_{model_name}.pth')
+    torch.save(model.state_dict(), model_save_path)
+    print(f'Best model saved to {model_save_path}')
+
     # Save validation predictions and labels to file
-    save_predictions(val_predictions, val_labels, iteration)
+    if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
+        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, iteration)
+    else:
+        print("No validation predictions to save.")
+
+    # Plot and save training curves
+    plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, iteration)
+
+    # Save best performance to summary file
+    save_performance_summary(model_name, best_jaccard, epoch_loss, time_elapsed)
 
     return model
 
-def save_predictions(predictions, labels, iteration):
+def save_predictions(predictions, labels, img_names, iteration):
+    # Ensure predictions and labels are NumPy arrays
+    predictions = np.asarray(predictions)
+    labels = np.asarray(labels)
+    img_names = np.asarray(img_names)
+
     # Generate timestamp for filename
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'predictions_iteration{iteration}_{timestamp}.csv'
+    filename = f'predictions_{model_name}_iteration{iteration}_{timestamp}.csv'
 
     # Save to specified directory
     output_path = os.path.join(output_dir, filename)
 
-    # Compare predictions with true labels to get True/False
-    correct_predictions = (predictions == labels)
+    # Build DataFrame with predictions
+    df_predictions = pd.DataFrame(predictions.astype(int), columns=attribute_names)
+    df_predictions.insert(0, 'image_name', img_names)
 
-    # Convert to DataFrame
-    df = pd.DataFrame(correct_predictions, columns=attribute_names)
-
-    df.to_csv(output_path, index=False)
+    df_predictions.to_csv(output_path, index=False)
     print(f'Validation predictions saved to {output_path}')
 
     # Generate classification report
     # For multi-label classification, provide labels and target_names
-    report = classification_report(labels, predictions, target_names=attribute_names, output_dict=True, zero_division=0)
+    report = classification_report(labels.astype(int), predictions.astype(int), target_names=attribute_names, output_dict=True, zero_division=0)
     report_df = pd.DataFrame(report).transpose()
-    report_filename = f'classification_report_iteration{iteration}_{timestamp}.csv'
+    report_filename = f'classification_report_{model_name}_iteration{iteration}_{timestamp}.csv'
     report_output_path = os.path.join(output_dir, report_filename)
     report_df.to_csv(report_output_path)
     print(f'Classification report saved to {report_output_path}')
 
-def plot_jaccard_scores(predictions, labels, output_path):
-    jaccard_scores = jaccard_score(labels, predictions, average=None)
-    plt.figure(figsize=(12, 6))
-    plt.bar(attribute_names, jaccard_scores)
-    plt.xticks(rotation=90)
-    plt.xlabel('Attributes')
-    plt.ylabel('Jaccard Score')
-    plt.title('Jaccard Scores per Attribute')
-    plt.tight_layout()
-    plt.savefig(output_path)
+def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, iteration):
+    epochs = range(1, len(train_losses) + 1)
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # Plot Loss
+    plt.figure()
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss')
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss')
+    plt.title(f'{model_name} Training and Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    loss_plot_filename = f'{model_name}_training_validation_loss_{timestamp}.png'
+    loss_plot_path = os.path.join(output_dir, loss_plot_filename)
+    plt.savefig(loss_plot_path)
     plt.close()
-    print(f'Jaccard scores per attribute saved to {output_path}')
+    print(f'Training and validation loss plot saved to {loss_plot_path}')
+
+    # Plot Jaccard Accuracy
+    plt.figure()
+    plt.plot(epochs, train_jaccards, 'b-', label='Training Jaccard Accuracy')
+    plt.plot(epochs, val_jaccards, 'r-', label='Validation Jaccard Accuracy')
+    plt.title(f'{model_name} Training and Validation Jaccard Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Jaccard Accuracy')
+    plt.legend()
+    acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy_{timestamp}.png'
+    acc_plot_path = os.path.join(output_dir, acc_plot_filename)
+    plt.savefig(acc_plot_path)
+    plt.close()
+    print(f'Training and validation accuracy plot saved to {acc_plot_path}')
+
+def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elapsed):
+    # Prepare data
+    data = {
+        'Model': [model_name],
+        'Best Validation Jaccard': [best_jaccard],
+        'Best Validation Loss': [best_val_loss],
+        'Training Time (s)': [int(time_elapsed)],
+        'Timestamp': [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+    }
+    df = pd.DataFrame(data)
+
+    # Check if the summary file exists
+    if os.path.exists(performance_summary_path):
+        # Append to existing file
+        df_existing = pd.read_csv(performance_summary_path)
+        df = pd.concat([df_existing, df], ignore_index=True)
+    # Save to CSV
+    df.to_csv(performance_summary_path, index=False)
+    print(f'Model performance summary updated at {performance_summary_path}')
 
 # Train the model
 if __name__ == '__main__':

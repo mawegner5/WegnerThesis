@@ -24,13 +24,13 @@ val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
 # Model configuration
-model_name = 'convnext_tiny'    # Options: 'convnext_tiny', 'convnext_small', 'convnext_base', 'convnext_large'
-num_epochs = 120                # Adjust as needed
-batch_size = 16                 # Adjust based on your GPU memory
-learning_rate = 0.0001          # Reduced learning rate
+model_name = 'vit_b_16'          # Options: 'vit_b_16', 'vit_b_32', 'vit_l_16', 'vit_l_32', etc.
+num_epochs = 120                 # Adjust as needed
+batch_size = 16                  # Adjust based on your GPU memory
+learning_rate = 0.0001           # Adjust learning rate
 momentum = 0.9
-num_workers = 1                 # Number of worker processes for data loading
-iteration = 5                   # For naming outputs
+num_workers = 1                  # Number of worker processes for data loading
+iteration = 5                    # For naming outputs
 
 # Output directory for saving predictions and reports
 output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
@@ -43,8 +43,17 @@ performance_summary_path = os.path.join(output_dir, 'model_performance_summary.c
 # Device configuration
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-# Input size for ConvNeXt models
-input_size = 224  # ConvNeXt models use 224x224 images
+# Input size for Vision Transformer models
+input_sizes = {
+    'vit_b_16': 224,
+    'vit_b_32': 224,
+    'vit_l_16': 224,
+    'vit_l_32': 224,
+    # Add more if needed
+}
+
+# Set the input size based on the model
+input_size = input_sizes[model_name]
 
 # --------------------------
 #       End of User Settings
@@ -141,24 +150,24 @@ dataloaders = {
 
 dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
 
-# Load ConvNeXt model
-from torchvision.models import (convnext_tiny, convnext_small, convnext_base, convnext_large)
+# Load Vision Transformer model
+from torchvision.models import (vit_b_16, vit_b_32, vit_l_16, vit_l_32)
 
 model = None
-if model_name == 'convnext_tiny':
-    model = convnext_tiny(weights=None)
-elif model_name == 'convnext_small':
-    model = convnext_small(weights=None)
-elif model_name == 'convnext_base':
-    model = convnext_base(weights=None)
-elif model_name == 'convnext_large':
-    model = convnext_large(weights=None)
+if model_name == 'vit_b_16':
+    model = vit_b_16(weights=None)
+elif model_name == 'vit_b_32':
+    model = vit_b_32(weights=None)
+elif model_name == 'vit_l_16':
+    model = vit_l_16(weights=None)
+elif model_name == 'vit_l_32':
+    model = vit_l_32(weights=None)
 else:
-    raise ValueError("Invalid model name. Choose from 'convnext_tiny', 'convnext_small', 'convnext_base', 'convnext_large'.")
+    raise ValueError("Invalid model name. Choose from 'vit_b_16', 'vit_b_32', 'vit_l_16', 'vit_l_32'.")
 
 # Modify the final layer to match the number of attributes
-num_ftrs = model.classifier[2].in_features  # ConvNeXt classifier is [LayerNorm, Linear (hidden), Linear (output)]
-model.classifier[2] = nn.Linear(num_ftrs, num_attributes)
+num_ftrs = model.heads.head.in_features
+model.heads.head = nn.Linear(num_ftrs, num_attributes)
 model = model.to(device)
 
 # Define soft Jaccard loss function
@@ -177,7 +186,7 @@ class SoftJaccardLoss(nn.Module):
 # Instantiate the loss function
 criterion = SoftJaccardLoss()
 
-# Define optimizer (switched to Adam)
+# Define optimizer (Adam optimizer)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
 # Define learning rate scheduler (CosineAnnealingWarmRestarts)
