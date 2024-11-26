@@ -12,6 +12,7 @@ from sklearn.metrics import classification_report, jaccard_score
 import matplotlib.pyplot as plt
 import datetime
 from tqdm import tqdm
+import optuna
 
 # --------------------------
 # User-Modifiable Parameters
@@ -23,13 +24,6 @@ train_dir = os.path.join(data_dir, 'train')
 val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
-# Model configuration
-num_epochs = 120            # Adjust as needed
-batch_size = 16             # Adjust based on your GPU memory
-learning_rate = 0.0001      # Reduced learning rate
-num_workers = 1             # Number of worker processes for data loading
-iteration = 5               # For naming outputs
-
 # Output directory for saving predictions and reports
 output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
 if not os.path.exists(output_dir):
@@ -40,6 +34,15 @@ performance_summary_path = os.path.join(output_dir, 'model_performance_summary.c
 
 # Device configuration
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+# Number of worker processes for data loading
+num_workers = 4  # Increased for faster data loading
+
+# Number of trials for Optuna
+n_trials = 20
+
+# Early stopping patience
+early_stopping_patience = 30  # Set between 25-50
 
 # --------------------------
 #       End of User Settings
@@ -98,57 +101,6 @@ class AwA2Dataset(Dataset):
         attributes = torch.FloatTensor(attributes)
         return image, attributes, img_name  # Return image name
 
-# Data transformations with data augmentation for training
-data_transforms = {
-    'train': transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(),
-        transforms.RandomRotation(15),
-        transforms.ToTensor(),
-        # Normalization values are standard for ImageNet
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225])
-    ]),
-    'validate': transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        # Normalization values are standard for ImageNet
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225])
-    ]),
-}
-
-# Load datasets
-datasets_dict = {
-    'train': AwA2Dataset(data_dir, 'train', transform=data_transforms['train']),
-    'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms['validate']),
-}
-
-# Data loaders
-dataloaders = {
-    'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
-                        shuffle=True, num_workers=num_workers),
-    'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
-                           shuffle=False, num_workers=num_workers),
-}
-
-dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
-
-# Load ResNet50 model without pre-trained weights
-from torchvision.models import resnet50
-
-model = resnet50(weights=None)
-
-# Modify the final layer to match the number of attributes
-num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, num_attributes)
-model = model.to(device)
-
-# Specify the model name for saving
-model_name = 'resnet50'
-
 # Define soft Jaccard loss function
 class SoftJaccardLoss(nn.Module):
     def __init__(self):
@@ -156,24 +108,15 @@ class SoftJaccardLoss(nn.Module):
 
     def forward(self, outputs, targets):
         eps = 1e-7
-        outputs = torch.sigmoid(outputs)
+        outputs = torch.sigmoid(outputs)  # Ensuring sigmoid activation
         intersection = (outputs * targets).sum(dim=1)
         union = (outputs + targets - outputs * targets).sum(dim=1)
         loss = 1 - (intersection + eps) / (union + eps)
         return loss.mean()
 
-# Instantiate the loss function
-criterion = SoftJaccardLoss()
-
-# Define optimizer (switched to Adam)
-optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
-
-# Define learning rate scheduler (CosineAnnealingWarmRestarts)
-scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
-
 # Early stopping class with increased patience
 class EarlyStopping:
-    def __init__(self, patience=10, verbose=False, delta=0):
+    def __init__(self, patience=early_stopping_patience, verbose=False, delta=0):
         """
         Args:
             patience (int): How long to wait after last time validation loss improved.
@@ -207,11 +150,98 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
 
-# Instantiate early stopping with increased patience
-early_stopping = EarlyStopping(patience=10, verbose=True)
+def train_model(trial):
+    # Hyperparameters to tune
+    num_epochs = trial.suggest_int('num_epochs', 50, 200, step=25)
+    batch_size = trial.suggest_categorical('batch_size', [64, 128, 256])
+    learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+    optimizer_name = trial.suggest_categorical('optimizer', ['Adam', 'SGD'])
+    T_0 = trial.suggest_int('T_0', 10, 50, step=10)  # For CosineAnnealingWarmRestarts
+    threshold = trial.suggest_float('threshold', 0.3, 0.7, step=0.05)  # Threshold for binary predictions
 
-# Training function
-def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
+    # Data transformations with data augmentation for training
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(),
+            transforms.RandomRotation(15),
+            transforms.ToTensor(),
+            # Normalization values are standard for ImageNet
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])
+        ]),
+        'validate': transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            # Normalization values are standard for ImageNet
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])
+        ]),
+    }
+
+    # Load datasets
+    datasets_dict = {
+        'train': AwA2Dataset(data_dir, 'train', transform=data_transforms['train']),
+        'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms['validate']),
+    }
+
+    # Data loaders
+    dataloaders = {
+        'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
+                            shuffle=True, num_workers=num_workers, pin_memory=True),
+        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
+                               shuffle=False, num_workers=num_workers, pin_memory=True),
+    }
+
+    dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
+
+    # Load ResNet50 model without pre-trained weights
+    from torchvision.models import resnet50
+
+    model = resnet50(weights=None)
+
+    # Add dropout for regularization
+    # Replace the fully connected layer with a custom layer that includes dropout
+    class ResNet50WithDropout(nn.Module):
+        def __init__(self, original_model, dropout_rate=0.5):
+            super(ResNet50WithDropout, self).__init__()
+            self.features = nn.Sequential(*list(original_model.children())[:-1])  # Exclude the last fc layer
+            self.dropout = nn.Dropout(p=dropout_rate)
+            self.fc = nn.Linear(original_model.fc.in_features, num_attributes)
+
+        def forward(self, x):
+            x = self.features(x)
+            x = torch.flatten(x, 1)
+            x = self.dropout(x)
+            x = self.fc(x)
+            return x
+
+    dropout_rate = trial.suggest_float('dropout_rate', 0.3, 0.7, step=0.1)
+    model = ResNet50WithDropout(model, dropout_rate=dropout_rate)
+
+    model = model.to(device)
+
+    # Specify the model name for saving
+    model_name = 'resnet50'
+
+    # Instantiate the loss function
+    criterion = SoftJaccardLoss()
+
+    # Define optimizer
+    if optimizer_name == 'Adam':
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    elif optimizer_name == 'SGD':
+        optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
+
+    # Define learning rate scheduler (CosineAnnealingWarmRestarts)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=2)
+
+    # Instantiate early stopping with increased patience
+    early_stopping = EarlyStopping(patience=early_stopping_patience, verbose=True)
+
     since = time.time()
 
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -250,8 +280,8 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
 
             # Iterate over data
             for batch_idx, (inputs, labels, img_names) in progress_bar:
-                inputs = inputs.to(device)
-                labels = labels.to(device)
+                inputs = inputs.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
 
                 # Zero parameter gradients
                 optimizer.zero_grad()
@@ -261,7 +291,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
                     outputs = model(inputs)
                     loss = criterion(outputs, labels)
                     preds = torch.sigmoid(outputs)
-                    preds_binary = (preds >= 0.5).float()
+                    preds_binary = (preds >= threshold).float()  # Using optimized threshold
 
                     # Backward pass and optimization
                     if phase == 'train':
@@ -333,25 +363,26 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs):
     model.load_state_dict(best_model_wts)
 
     # Save the best model weights with CNN type in filename
-    model_save_path = os.path.join(output_dir, f'best_model_{model_name}.pth')
+    model_save_path = os.path.join(output_dir, f'best_model_{model_name}_trial{trial.number}.pth')
     torch.save(model.state_dict(), model_save_path)
     print(f'Best model saved to {model_save_path}')
 
     # Save validation predictions and labels to file
     if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
-        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, iteration)
+        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, trial.number)
     else:
         print("No validation predictions to save.")
 
     # Plot and save training curves
-    plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, iteration)
+    plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial.number, model_name)
 
     # Save best performance to summary file
-    save_performance_summary(model_name, best_jaccard, epoch_loss, time_elapsed)
+    save_performance_summary(model_name, best_jaccard, epoch_loss, time_elapsed, trial)
 
-    return model
+    # Return the best validation loss for Optuna to minimize
+    return epoch_loss
 
-def save_predictions(predictions, labels, img_names, iteration):
+def save_predictions(predictions, labels, img_names, trial_number):
     # Ensure predictions and labels are NumPy arrays
     predictions = np.asarray(predictions)
     labels = np.asarray(labels)
@@ -359,7 +390,7 @@ def save_predictions(predictions, labels, img_names, iteration):
 
     # Generate timestamp for filename
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'predictions_{model_name}_iteration{iteration}_{timestamp}.csv'
+    filename = f'predictions_{model_name}_trial{trial_number}_{timestamp}.csv'
 
     # Save to specified directory
     output_path = os.path.join(output_dir, filename)
@@ -375,12 +406,12 @@ def save_predictions(predictions, labels, img_names, iteration):
     # For multi-label classification, provide labels and target_names
     report = classification_report(labels.astype(int), predictions.astype(int), target_names=attribute_names, output_dict=True, zero_division=0)
     report_df = pd.DataFrame(report).transpose()
-    report_filename = f'classification_report_{model_name}_iteration{iteration}_{timestamp}.csv'
+    report_filename = f'classification_report_{model_name}_trial{trial_number}_{timestamp}.csv'
     report_output_path = os.path.join(output_dir, report_filename)
     report_df.to_csv(report_output_path)
     print(f'Classification report saved to {report_output_path}')
 
-def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, iteration):
+def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial_number, model_name):
     epochs = range(1, len(train_losses) + 1)
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -392,7 +423,7 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
-    loss_plot_filename = f'{model_name}_training_validation_loss_{timestamp}.png'
+    loss_plot_filename = f'{model_name}_training_validation_loss_trial{trial_number}_{timestamp}.png'
     loss_plot_path = os.path.join(output_dir, loss_plot_filename)
     plt.savefig(loss_plot_path)
     plt.close()
@@ -406,19 +437,28 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
     plt.xlabel('Epochs')
     plt.ylabel('Jaccard Accuracy')
     plt.legend()
-    acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy_{timestamp}.png'
+    acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy_trial{trial_number}_{timestamp}.png'
     acc_plot_path = os.path.join(output_dir, acc_plot_filename)
     plt.savefig(acc_plot_path)
     plt.close()
     print(f'Training and validation accuracy plot saved to {acc_plot_path}')
 
-def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elapsed):
+def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elapsed, trial):
     # Prepare data
     data = {
+        'Trial': [trial.number],
         'Model': [model_name],
         'Best Validation Jaccard': [best_jaccard],
         'Best Validation Loss': [best_val_loss],
         'Training Time (s)': [int(time_elapsed)],
+        'Optimizer': [trial.params['optimizer']],
+        'Learning Rate': [trial.params['learning_rate']],
+        'Batch Size': [trial.params['batch_size']],
+        'Weight Decay': [trial.params['weight_decay']],
+        'Num Epochs': [trial.params['num_epochs']],
+        'Dropout Rate': [trial.params['dropout_rate']],
+        'Scheduler T_0': [trial.params['T_0']],
+        'Threshold': [trial.params['threshold']],
         'Timestamp': [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
     }
     df = pd.DataFrame(data)
@@ -432,6 +472,16 @@ def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elaps
     df.to_csv(performance_summary_path, index=False)
     print(f'Model performance summary updated at {performance_summary_path}')
 
-# Train the model
 if __name__ == '__main__':
-    model = train_model(model, criterion, optimizer, scheduler, num_epochs=num_epochs)
+    study = optuna.create_study(direction='minimize')
+    study.optimize(train_model, n_trials=n_trials)
+
+    print('Number of finished trials:', len(study.trials))
+    print('Best trial:')
+    trial = study.best_trial
+
+    print(f'  Trial Number: {trial.number}')
+    print(f'  Loss: {trial.value}')
+    print('  Params: ')
+    for key, value in trial.params.items():
+        print(f'    {key}: {value}')

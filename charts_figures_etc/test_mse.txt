@@ -1,1 +1,0 @@
-Mean Squared Error on Selected Test Images: 202.4700

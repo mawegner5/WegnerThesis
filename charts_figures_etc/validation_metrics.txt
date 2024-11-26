@@ -1,2 +1,0 @@
-Mean Absolute Percentage Error (MAPE) on Validation Set: 5833920650149888.0000
-Coefficient of Determination (R²) on Validation Set: 0.0556
