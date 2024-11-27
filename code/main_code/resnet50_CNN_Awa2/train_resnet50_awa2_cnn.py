@@ -36,7 +36,7 @@ performance_summary_path = os.path.join(output_dir, 'model_performance_summary.c
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # Number of worker processes for data loading
-num_workers = 4  # Increased for faster data loading
+num_workers = 0  # Set to 0 to avoid worker issues
 
 # Number of trials for Optuna
 n_trials = 20
@@ -191,9 +191,9 @@ def train_model(trial):
     # Data loaders
     dataloaders = {
         'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
-                            shuffle=True, num_workers=num_workers, pin_memory=True),
+                            shuffle=True, num_workers=num_workers, pin_memory=False),
         'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
-                               shuffle=False, num_workers=num_workers, pin_memory=True),
+                               shuffle=False, num_workers=num_workers, pin_memory=False),
     }
 
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
@@ -369,7 +369,7 @@ def train_model(trial):
 
     # Save validation predictions and labels to file
     if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
-        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, trial.number)
+        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, trial.number, model_name)
     else:
         print("No validation predictions to save.")
 
@@ -382,7 +382,7 @@ def train_model(trial):
     # Return the best validation loss for Optuna to minimize
     return epoch_loss
 
-def save_predictions(predictions, labels, img_names, trial_number):
+def save_predictions(predictions, labels, img_names, trial_number, model_name):
     # Ensure predictions and labels are NumPy arrays
     predictions = np.asarray(predictions)
     labels = np.asarray(labels)

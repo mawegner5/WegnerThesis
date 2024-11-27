@@ -1,355 +1,494 @@
-#!/usr/bin/env python3
-# pre_reqs.py
-
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import Dataset, DataLoader, Subset
 import os
-from pathlib import Path
-import sys
-import pandas as pd
 import numpy as np
-from PIL import Image
+import pandas as pd
+import time
+import copy
+from sklearn.metrics import classification_report, jaccard_score
+import matplotlib.pyplot as plt
+import datetime
+from tqdm import tqdm
+import optuna
 
-def main():
-    # ----------------------------
-    # Define Paths
-    # ----------------------------
-    # Base directory containing the dataset
-    dataset_dir = '/root/.ipython/WegnerThesis/animals_with_attributes/animals_w_att_data/Animals_with_Attributes2'
-    
-    # Directories for splits
-    splits_base_dir = '/root/.ipython/WegnerThesis/animals_with_attributes/animals_w_att_data'
-    train_dir = os.path.join(splits_base_dir, 'train')
-    val_dir = os.path.join(splits_base_dir, 'validate')
-    test_dir = os.path.join(splits_base_dir, 'test')
-    
-    # Class lists
-    train_classes_txt = os.path.join(dataset_dir, 'trainclasses.txt')
-    val_classes_txt = os.path.join(dataset_dir, 'valclasses.txt')
-    test_classes_txt = os.path.join(dataset_dir, 'testclasses.txt')
-    
-    # CSV file with attributes
-    csv_path = os.path.join(dataset_dir, 'predicate_matrix_with_labels.csv')
-    
-    # Expected Classes
-    expected_classes = {
-        'antelope',
-        'grizzly+bear',
-        'killer+whale',
-        'beaver',
-        'dalmatian',
-        'persian+cat',
-        'horse',
-        'german+shepherd',
-        'blue+whale',
-        'siamese+cat',
-        'skunk',
-        'mole',
-        'tiger',
-        'hippopotamus',
-        'leopard',
-        'moose',
-        'spider+monkey',
-        'humpback+whale',
-        'elephant',
-        'gorilla',
-        'ox',
-        'fox',
-        'sheep',
-        'seal',
-        'chimpanzee',
-        'hamster',
-        'squirrel',
-        'rhinoceros',
-        'rabbit',
-        'bat',
-        'giraffe',
-        'wolf',
-        'chihuahua',
-        'rat',
-        'weasel',
-        'otter',
-        'buffalo',
-        'zebra',
-        'giant+panda',
-        'deer',
-        'bobcat',
-        'pig',
-        'lion',
-        'mouse',
-        'polar+bear',
-        'collie',
-        'walrus',
-        'raccoon',
-        'cow',
-        'dolphin'
+# --------------------------
+# User-Modifiable Parameters
+# --------------------------
+
+# Set test mode to True for quick testing
+test_mode = True  # Set to False when running the full training
+
+# Data directories
+data_dir = '/root/.ipython/WegnerThesis/animals_with_attributes/animals_w_att_data'
+train_dir = os.path.join(data_dir, 'train')
+val_dir = os.path.join(data_dir, 'validate')
+test_dir = os.path.join(data_dir, 'test')
+
+# Output directory for saving predictions and reports
+output_dir = '/root/.ipython/WegnerThesis/charts_figures_etc'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
+# Path to the model performance summary file
+performance_summary_path = os.path.join(output_dir, 'model_performance_summary.csv')
+
+# Device configuration
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+# Number of worker processes for data loading
+num_workers = 0  # Set to 0 to avoid worker issues
+
+# Number of trials for Optuna
+n_trials = 1 if test_mode else 20  # Run only 1 trial in test mode
+
+# Early stopping patience
+early_stopping_patience = 2 if test_mode else 30  # Use smaller patience in test mode
+
+# --------------------------
+#       End of User Settings
+# --------------------------
+
+# Load attribute names and class-attribute matrix from CSV
+attributes_csv_path = os.path.join(data_dir, 'Animals_with_Attributes2', 'predicate_matrix_with_labels.csv')
+attributes_df = pd.read_csv(attributes_csv_path, index_col=0)
+attributes = attributes_df.values  # Convert DataFrame to NumPy array
+attribute_names = attributes_df.columns.tolist()
+classes = attributes_df.index.tolist()
+
+num_attributes = len(attribute_names)
+
+# Custom dataset to include attributes and image names
+class AwA2Dataset(Dataset):
+    def __init__(self, root_dir, phase, transform=None):
+        self.root_dir = root_dir
+        self.phase = phase
+        self.transform = transform
+        self.samples = []
+        self.attributes = []
+
+        # Map class names to indices
+        self.class_to_idx = {cls_name: idx for idx, cls_name in enumerate(classes)}
+
+        # Prepare the dataset
+        self._prepare_dataset()
+
+    def _prepare_dataset(self):
+        phase_dir = os.path.join(self.root_dir, self.phase)
+        for class_name in os.listdir(phase_dir):
+            class_dir = os.path.join(phase_dir, class_name)
+            if not os.path.isdir(class_dir):
+                continue
+            if class_name not in self.class_to_idx:
+                print(f"Warning: Class {class_name} not found in class list.")
+                continue
+            class_idx = self.class_to_idx[class_name]
+            class_attributes = attributes[class_idx]
+
+            for img_name in os.listdir(class_dir):
+                img_path = os.path.join(class_dir, img_name)
+                self.samples.append((img_path, img_name))  # Store both path and name
+                self.attributes.append(class_attributes)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        img_path, img_name = self.samples[idx]
+        attributes = self.attributes[idx]
+        try:
+            image = datasets.folder.default_loader(img_path)
+        except Exception as e:
+            print(f"Error loading image {img_path}: {e}")
+            # Create a blank image in case of error
+            image = Image.new('RGB', (224, 224))
+        if self.transform is not None:
+            image = self.transform(image)
+        attributes = torch.FloatTensor(attributes)
+        return image, attributes, img_name  # Return image name
+
+# Define soft Jaccard loss function
+class SoftJaccardLoss(nn.Module):
+    def __init__(self):
+        super(SoftJaccardLoss, self).__init__()
+
+    def forward(self, outputs, targets):
+        eps = 1e-7
+        outputs = torch.sigmoid(outputs)  # Ensuring sigmoid activation
+        intersection = (outputs * targets).sum(dim=1)
+        union = (outputs + targets - outputs * targets).sum(dim=1)
+        loss = 1 - (intersection + eps) / (union + eps)
+        return loss.mean()
+
+# Early stopping class with increased patience
+class EarlyStopping:
+    def __init__(self, patience=early_stopping_patience, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+        self.delta = delta
+
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+            if self.verbose:
+                print(f'Validation loss decreased to {val_loss:.6f}')
+        elif val_loss > self.best_loss - self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                print(f'Validation loss did not improve from {self.best_loss:.6f}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+                if self.verbose:
+                    print('Early stopping triggered')
+        else:
+            if self.verbose:
+                print(f'Validation loss decreased from {self.best_loss:.6f} to {val_loss:.6f}')
+            self.best_loss = val_loss
+            self.counter = 0
+
+def train_model(trial):
+    # Hyperparameters to tune
+    num_epochs = 1 if test_mode else trial.suggest_int('num_epochs', 50, 200, step=25)
+    batch_size = 8 if test_mode else trial.suggest_categorical('batch_size', [64, 128, 256])
+    learning_rate = 1e-4 if test_mode else trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    weight_decay = 1e-5 if test_mode else trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+    optimizer_name = 'Adam' if test_mode else trial.suggest_categorical('optimizer', ['Adam', 'SGD'])
+    T_0 = 10 if test_mode else trial.suggest_int('T_0', 10, 50, step=10)
+    threshold = 0.5 if test_mode else trial.suggest_float('threshold', 0.3, 0.7, step=0.05)
+    dropout_rate = 0.5 if test_mode else trial.suggest_float('dropout_rate', 0.3, 0.7, step=0.1)
+
+    # Data transformations with data augmentation for training
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(),
+            transforms.RandomRotation(15),
+            transforms.ToTensor(),
+            # Normalization values are standard for ImageNet
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])
+        ]),
+        'validate': transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            # Normalization values are standard for ImageNet
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])
+        ]),
     }
-    
-    # ----------------------------
-    # Read Class Lists Function
-    # ----------------------------
-    def read_classes(file_path):
-        if not os.path.exists(file_path):
-            print(f"ERROR: Class list file does not exist: {file_path}")
-            sys.exit(1)
-        with open(file_path, 'r') as f:
-            classes = [line.strip() for line in f.readlines()]
-        return classes
-    
-    # ----------------------------
-    # Read Class Lists
-    # ----------------------------
-    train_classes = read_classes(train_classes_txt)
-    val_classes = read_classes(val_classes_txt)
-    test_classes = read_classes(test_classes_txt)
-    
-    # ----------------------------
-    # Initialize Flags
-    # ----------------------------
-    errors_found = False
-    
-    # ----------------------------
-    # Check Class Lists Integrity
-    # ----------------------------
-    print("\n--- Verifying Class Lists Integrity ---")
-    
-    # 1. Check the number of classes in each split
-    if len(train_classes) != 35:
-        print(f"ERROR: Expected 35 training classes, found {len(train_classes)}")
-        errors_found = True
-    else:
-        print("PASS: Correct number of training classes (35)")
-    
-    if len(val_classes) != 5:
-        print(f"ERROR: Expected 5 validation classes, found {len(val_classes)}")
-        errors_found = True
-    else:
-        print("PASS: Correct number of validation classes (5)")
-    
-    if len(test_classes) != 10:
-        print(f"ERROR: Expected 10 test classes, found {len(test_classes)}")
-        errors_found = True
-    else:
-        print("PASS: Correct number of test classes (10)")
-    
-    # 2. Check for duplicate classes across splits
-    train_set = set(train_classes)
-    val_set = set(val_classes)
-    test_set = set(test_classes)
-    
-    overlap_train_val = train_set.intersection(val_set)
-    overlap_train_test = train_set.intersection(test_set)
-    overlap_val_test = val_set.intersection(test_set)
-    
-    if overlap_train_val:
-        print(f"ERROR: Overlapping classes between train and validate: {overlap_train_val}")
-        errors_found = True
-    else:
-        print("PASS: No overlapping classes between train and validate")
-    
-    if overlap_train_test:
-        print(f"ERROR: Overlapping classes between train and test: {overlap_train_test}")
-        errors_found = True
-    else:
-        print("PASS: No overlapping classes between train and test")
-    
-    if overlap_val_test:
-        print(f"ERROR: Overlapping classes between validate and test: {overlap_val_test}")
-        errors_found = True
-    else:
-        print("PASS: No overlapping classes between validate and test")
-    
-    # 3. Check that all classes are among the expected classes
-    all_split_classes = set(train_classes + val_classes + test_classes)
-    unexpected_classes = all_split_classes - expected_classes
-    missing_classes = expected_classes - all_split_classes
-    
-    if unexpected_classes:
-        print(f"ERROR: Unexpected classes found: {unexpected_classes}")
-        errors_found = True
-    else:
-        print("PASS: All classes in splits are expected")
-    
-    if missing_classes:
-        print(f"ERROR: Missing classes not present in any split: {missing_classes}")
-        errors_found = True
-    else:
-        print("PASS: No missing classes")
-    
-    # 4. Check that total classes across splits equal expected number
-    if len(all_split_classes) != 50:
-        print(f"ERROR: Total unique classes across splits is {len(all_split_classes)}, expected 50")
-        errors_found = True
-    else:
-        print("PASS: Total unique classes across splits is 50")
-    
-    # ----------------------------
-    # Check Directory Structures
-    # ----------------------------
-    print("\n--- Verifying Directory Structures ---")
-    
-    # Define a helper function to verify directories
-    def verify_split_dir(split_dir, split_classes, split_name):
-        nonlocal errors_found
-        print(f"\nVerifying {split_name} directory: {split_dir}")
-        if not os.path.exists(split_dir):
-            print(f"ERROR: {split_name} directory does not exist: {split_dir}")
-            errors_found = True
-            return
-        
-        # List actual class directories in the split
-        actual_classes = set([entry.name for entry in Path(split_dir).iterdir() if entry.is_dir()])
-        
-        # Expected classes for this split
-        expected_split_classes = set(split_classes)
-        
-        # Check for missing classes in the directory
-        missing_in_dir = expected_split_classes - actual_classes
-        if missing_in_dir:
-            print(f"ERROR: The following classes are missing in {split_name} directory: {missing_in_dir}")
-            errors_found = True
-        else:
-            print(f"PASS: All classes are present in {split_name} directory")
-        
-        # Check for extra classes in the directory
-        extra_in_dir = actual_classes - expected_split_classes
-        if extra_in_dir:
-            print(f"ERROR: The following unexpected classes are present in {split_name} directory: {extra_in_dir}")
-            errors_found = True
-        else:
-            print(f"PASS: No unexpected classes in {split_name} directory")
-        
-        # Check each class directory contains at least one image
-        for cls in expected_split_classes:
-            cls_dir = Path(split_dir) / cls
-            if not cls_dir.exists():
-                print(f"ERROR: Class directory does not exist: {cls_dir}")
-                errors_found = True
-                continue
-            image_files = [f for f in cls_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']]
-            if not image_files:
-                print(f"ERROR: No image files found in class directory: {cls_dir}")
-                errors_found = True
-            else:
-                print(f"PASS: {len(image_files)} images found in {cls_dir}")
-    
-    # Verify 'train' directory
-    verify_split_dir(train_dir, train_classes, 'Train')
-    
-    # Verify 'validate' directory
-    verify_split_dir(val_dir, val_classes, 'Validate')
-    
-    # Verify 'test' directory
-    verify_split_dir(test_dir, test_classes, 'Test')
-    
-    # ----------------------------
-    # Check Data Loading and Label Alignment
-    # ----------------------------
-    print("\n--- Verifying Data Loading and Label Alignment ---")
-    
-    # Load the predicate matrix with labels
-    try:
-        df_attributes = pd.read_csv(csv_path)
-        print(f"Loaded attribute CSV with shape: {df_attributes.shape}")
-    except Exception as e:
-        print(f"ERROR: Unable to load attributes CSV: {e}")
-        errors_found = True
-        sys.exit(1)
-    
-    # Create a mapping from class name to attributes
-    class_to_attributes = {}
-    for _, row in df_attributes.iterrows():
-        class_name = row['class'].strip()
-        attributes = row.drop('class').values.astype(int)
-        class_to_attributes[class_name] = attributes
-    
-    # Verify that all classes in splits have corresponding attributes
-    for split_classes, split_name in zip([train_classes, val_classes, test_classes], ['Train', 'Validate', 'Test']):
-        missing_attributes = [cls for cls in split_classes if cls not in class_to_attributes]
-        if missing_attributes:
-            print(f"ERROR: The following classes in {split_name} split do not have attributes in CSV: {missing_attributes}")
-            errors_found = True
-        else:
-            print(f"PASS: All classes in {split_name} split have corresponding attributes")
-    
-    # Now let's sample some images and verify their labels
-    def verify_data_loading(split_dir, split_classes, split_name):
-        nonlocal errors_found
-        print(f"\nSampling data from {split_name} split for verification:")
-        num_samples = 5  # Number of samples per class to verify
-        for cls in split_classes:
-            cls_dir = Path(split_dir) / cls
-            if not cls_dir.exists():
-                continue
-            image_files = [f for f in cls_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']]
-            if not image_files:
-                continue
-            samples = image_files[:num_samples]
-            for img_file in samples:
-                img_path = str(img_file)
-                try:
-                    image = Image.open(img_path).convert('RGB')
-                    image.verify()  # Verify that it is a valid image
-                    # Get the attributes for this class
-                    attributes = class_to_attributes.get(cls, None)
-                    if attributes is None:
-                        print(f"ERROR: No attributes found for class {cls}")
-                        errors_found = True
-                    else:
-                        print(f"PASS: Image {img_path} loaded successfully. Class: {cls}, Attributes: {attributes}")
-                except Exception as e:
-                    print(f"ERROR: Failed to load image {img_path}: {e}")
-                    errors_found = True
-    
-    # Verify data loading for each split
-    verify_data_loading(train_dir, train_classes, 'Train')
-    verify_data_loading(val_dir, val_classes, 'Validate')
-    verify_data_loading(test_dir, test_classes, 'Test')
-    
-    # ----------------------------
-    # Check for Class Imbalance
-    # ----------------------------
-    print("\n--- Checking for Class Imbalance ---")
-    
-    # Collect attribute counts in training data
-    attribute_counts = np.zeros(85)  # Assuming 85 attributes
-    total_images = 0
-    for cls in train_classes:
-        attributes = class_to_attributes.get(cls)
-        if attributes is None:
-            continue
-        cls_dir = Path(train_dir) / cls
-        if not cls_dir.exists():
-            continue
-        num_images = len([f for f in cls_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']])
-        attribute_counts += attributes * num_images
-        total_images += num_images
-    
-    # Print attribute distribution
-    if total_images == 0:
-        print("ERROR: No images found in training data to compute attribute distribution.")
-        errors_found = True
-    else:
-        attribute_distribution = attribute_counts / total_images
-        print("Attribute distribution in training data:")
-        for idx, freq in enumerate(attribute_distribution):
-            print(f"Attribute {idx+1}: {freq:.4f}")
-    
-    # Optionally, you can check for extremely rare or never occurring attributes
-    rare_attributes = np.where(attribute_counts < 10)[0]
-    if len(rare_attributes) > 0:
-        print(f"WARNING: The following attributes are rare (less than 10 occurrences): {rare_attributes + 1}")
-    else:
-        print("PASS: No extremely rare attributes found in training data.")
-    
-    # ----------------------------
-    # Final Summary
-    # ----------------------------
-    print("\n--- Summary ---")
-    if errors_found:
-        print("One or more issues were found during the verification process. Please address them before proceeding to train the model.")
-        sys.exit(1)
-    else:
-        print("All checks passed successfully. Your dataset is correctly organized and ready for training.")
-        sys.exit(0)
 
-if __name__ == "__main__":
-    main()
+    # Load datasets
+    datasets_dict = {
+        'train': AwA2Dataset(data_dir, 'train', transform=data_transforms['train']),
+        'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms['validate']),
+    }
+
+    # Create subsets for testing
+    if test_mode:
+        datasets_dict['train'] = Subset(datasets_dict['train'], range(0, 16))  # 16 samples
+        datasets_dict['validate'] = Subset(datasets_dict['validate'], range(0, 16))  # 16 samples
+
+    # Data loaders
+    dataloaders = {
+        'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
+                            shuffle=True, num_workers=num_workers, pin_memory=False),
+        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
+                               shuffle=False, num_workers=num_workers, pin_memory=False),
+    }
+
+    dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
+
+    # Load ResNet50 model without pre-trained weights
+    from torchvision.models import resnet50
+
+    model = resnet50(weights=None)
+
+    # Add dropout for regularization
+    # Replace the fully connected layer with a custom layer that includes dropout
+    class ResNet50WithDropout(nn.Module):
+        def __init__(self, original_model, dropout_rate=0.5):
+            super(ResNet50WithDropout, self).__init__()
+            self.features = nn.Sequential(*list(original_model.children())[:-1])  # Exclude the last fc layer
+            self.dropout = nn.Dropout(p=dropout_rate)
+            self.fc = nn.Linear(original_model.fc.in_features, num_attributes)
+
+        def forward(self, x):
+            x = self.features(x)
+            x = torch.flatten(x, 1)
+            x = self.dropout(x)
+            x = self.fc(x)
+            return x
+
+    model = ResNet50WithDropout(model, dropout_rate=dropout_rate)
+
+    model = model.to(device)
+
+    # Specify the model name for saving
+    model_name = 'resnet50'
+
+    # Instantiate the loss function
+    criterion = SoftJaccardLoss()
+
+    # Define optimizer
+    if optimizer_name == 'Adam':
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    elif optimizer_name == 'SGD':
+        optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
+
+    # Define learning rate scheduler (CosineAnnealingWarmRestarts)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=2)
+
+    # Instantiate early stopping with increased patience
+    early_stopping = EarlyStopping(patience=early_stopping_patience, verbose=True)
+
+    since = time.time()
+
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_jaccard = 0.0
+
+    # Variables to store best validation results
+    best_val_predictions = None
+    best_val_labels = None
+    best_val_img_names = None
+
+    # Lists to store loss and jaccard scores
+    train_losses = []
+    val_losses = []
+    train_jaccards = []
+    val_jaccards = []
+
+    for epoch in range(num_epochs):
+        print(f'\nEpoch {epoch+1}/{num_epochs}')
+        print('-' * 10)
+
+        # Each epoch has a training and validation phase
+        for phase in ['train', 'validate']:
+            if phase == 'train':
+                model.train()  # Training mode
+            else:
+                model.eval()   # Evaluation mode
+                val_predictions = []
+                val_labels = []
+                val_img_names = []
+
+            running_loss = 0.0
+            running_jaccard = 0.0
+
+            progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}",
+                                total=len(dataloaders[phase]), unit='batch')
+
+            # Iterate over data
+            for batch_idx, (inputs, labels, img_names) in progress_bar:
+                inputs = inputs.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+
+                # Zero parameter gradients
+                optimizer.zero_grad()
+
+                # Forward pass
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+                    preds = torch.sigmoid(outputs)
+                    preds_binary = (preds >= threshold).float()  # Using optimized threshold
+
+                    # Backward pass and optimization
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                    # Collect predictions and labels for Jaccard score calculation
+                    preds_np = preds_binary.detach().cpu().numpy()
+                    labels_np = labels.detach().cpu().numpy()
+
+                    # Update running Jaccard score
+                    batch_jaccard = jaccard_score(labels_np, preds_np, average='samples', zero_division=0)
+                    running_jaccard += batch_jaccard * inputs.size(0)
+
+                    if phase == 'validate':
+                        val_predictions.append(preds_np)
+                        val_labels.append(labels_np)
+                        val_img_names.extend(img_names)
+
+                # Statistics
+                running_loss += loss.item() * inputs.size(0)
+
+                # Update progress bar
+                batch_loss = running_loss / ((batch_idx + 1) * inputs.size(0))
+                batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
+                progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
+
+            # Calculate epoch loss and Jaccard score
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_jaccard = running_jaccard / dataset_sizes[phase]
+
+            print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
+
+            # Store losses and jaccards
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_jaccards.append(epoch_jaccard)
+                scheduler.step()  # Update learning rate
+            else:
+                val_losses.append(epoch_loss)
+                val_jaccards.append(epoch_jaccard)
+
+                early_stopping(epoch_loss)
+
+                # Concatenate all predictions and labels
+                val_predictions = np.vstack(val_predictions)
+                val_labels = np.vstack(val_labels)
+
+                # Update best model if validation Jaccard improved
+                if epoch_jaccard > best_jaccard:
+                    best_jaccard = epoch_jaccard
+                    best_model_wts = copy.deepcopy(model.state_dict())
+                    best_val_predictions = val_predictions
+                    best_val_labels = val_labels
+                    best_val_img_names = val_img_names
+
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
+
+        if early_stopping.early_stop:
+            break
+
+    time_elapsed = time.time() - since
+    print(f'\nTraining complete in {int(time_elapsed // 60)}m {int(time_elapsed % 60)}s')
+    print(f'Best Validation Jaccard Score: {best_jaccard:.4f}')
+
+    # Load best model weights
+    model.load_state_dict(best_model_wts)
+
+    # Save the best model weights with CNN type in filename
+    model_save_path = os.path.join(output_dir, f'best_model_{model_name}_trial{trial.number}.pth')
+    torch.save(model.state_dict(), model_save_path)
+    print(f'Best model saved to {model_save_path}')
+
+    # Save validation predictions and labels to file
+    if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
+        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, trial.number, model_name)
+    else:
+        print("No validation predictions to save.")
+
+    # Plot and save training curves
+    plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial.number, model_name)
+
+    # Save best performance to summary file
+    save_performance_summary(model_name, best_jaccard, epoch_loss, time_elapsed, trial)
+
+    # Return the best validation loss for Optuna to minimize
+    return epoch_loss
+
+def save_predictions(predictions, labels, img_names, trial_number, model_name):
+    # Ensure predictions and labels are NumPy arrays
+    predictions = np.asarray(predictions)
+    labels = np.asarray(labels)
+    img_names = np.asarray(img_names)
+
+    # Generate timestamp for filename
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f'predictions_{model_name}_trial{trial_number}_{timestamp}.csv'
+
+    # Save to specified directory
+    output_path = os.path.join(output_dir, filename)
+
+    # Build DataFrame with predictions
+    df_predictions = pd.DataFrame(predictions.astype(int), columns=attribute_names)
+    df_predictions.insert(0, 'image_name', img_names)
+
+    df_predictions.to_csv(output_path, index=False)
+    print(f'Validation predictions saved to {output_path}')
+
+    # Generate classification report
+    # For multi-label classification, provide labels and target_names
+    report = classification_report(labels.astype(int), predictions.astype(int), target_names=attribute_names, output_dict=True, zero_division=0)
+    report_df = pd.DataFrame(report).transpose()
+    report_filename = f'classification_report_{model_name}_trial{trial_number}_{timestamp}.csv'
+    report_output_path = os.path.join(output_dir, report_filename)
+    report_df.to_csv(report_output_path)
+    print(f'Classification report saved to {report_output_path}')
+
+def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial_number, model_name):
+    epochs = range(1, len(train_losses) + 1)
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # Plot Loss
+    plt.figure()
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss')
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss')
+    plt.title(f'{model_name} Training and Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    loss_plot_filename = f'{model_name}_training_validation_loss_trial{trial_number}_{timestamp}.png'
+    loss_plot_path = os.path.join(output_dir, loss_plot_filename)
+    plt.savefig(loss_plot_path)
+    plt.close()
+    print(f'Training and validation loss plot saved to {loss_plot_path}')
+
+    # Plot Jaccard Accuracy
+    plt.figure()
+    plt.plot(epochs, train_jaccards, 'b-', label='Training Jaccard Accuracy')
+    plt.plot(epochs, val_jaccards, 'r-', label='Validation Jaccard Accuracy')
+    plt.title(f'{model_name} Training and Validation Jaccard Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Jaccard Accuracy')
+    plt.legend()
+    acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy_trial{trial_number}_{timestamp}.png'
+    acc_plot_path = os.path.join(output_dir, acc_plot_filename)
+    plt.savefig(acc_plot_path)
+    plt.close()
+    print(f'Training and validation accuracy plot saved to {acc_plot_path}')
+
+def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elapsed, trial):
+    # Prepare data
+    data = {
+        'Trial': [trial.number],
+        'Model': [model_name],
+        'Best Validation Jaccard': [best_jaccard],
+        'Best Validation Loss': [best_val_loss],
+        'Training Time (s)': [int(time_elapsed)],
+        'Optimizer': [trial.params.get('optimizer', 'Adam')],
+        'Learning Rate': [trial.params.get('learning_rate', 1e-4)],
+        'Batch Size': [trial.params.get('batch_size', 8)],
+        'Weight Decay': [trial.params.get('weight_decay', 1e-5)],
+        'Num Epochs': [trial.params.get('num_epochs', 1)],
+        'Dropout Rate': [trial.params.get('dropout_rate', 0.5)],
+        'Scheduler T_0': [trial.params.get('T_0', 10)],
+        'Threshold': [trial.params.get('threshold', 0.5)],
+        'Timestamp': [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+    }
+    df = pd.DataFrame(data)
+
+    # Check if the summary file exists
+    if os.path.exists(performance_summary_path):
+        # Append to existing file
+        df_existing = pd.read_csv(performance_summary_path)
+        df = pd.concat([df_existing, df], ignore_index=True)
+    # Save to CSV
+    df.to_csv(performance_summary_path, index=False)
+    print(f'Model performance summary updated at {performance_summary_path}')
+
+if __name__ == '__main__':
+    study = optuna.create_study(direction='minimize')
+    study.optimize(train_model, n_trials=n_trials)
+
+    print('Number of finished trials:', len(study.trials))
+    print('Best trial:')
+    trial = study.best_trial
+
+    print(f'  Trial Number: {trial.number}')
+    print(f'  Loss: {trial.value}')
+    print('  Params: ')
+    for key, value in trial.params.items():
+        print(f'    {key}: {value}')
