@@ -33,3 +33,4 @@ ray[tune]==2.7.1
 
 # Ensuring compatibility with Ray Tune
 pydantic==2.9.2
+optuna
