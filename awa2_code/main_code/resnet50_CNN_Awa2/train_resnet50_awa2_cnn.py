@@ -37,7 +37,7 @@ performance_summary_path = os.path.join(output_dir, 'model_performance_summary.c
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # Number of worker processes for data loading
-num_workers = 4  # Adjust based on your system's capability
+num_workers = 0  # Set to 0 to avoid DataLoader worker issues
 
 # Training parameters
 num_epochs_initial = 150       # Number of epochs for initial training
@@ -74,7 +74,7 @@ class AwA2Dataset(Dataset):
         self.samples = []
         self.attributes = []
 
-        # Map class names to indices
+        # Map class names to attributes
         self.class_to_attributes = attributes_df.to_dict(orient='index')
 
         # Prepare the dataset
@@ -205,9 +205,9 @@ def train_initial_model():
     # Data loaders
     dataloaders = {
         'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
-                            shuffle=True, num_workers=num_workers, pin_memory=True),
+                            shuffle=True, num_workers=num_workers, pin_memory=False),
         'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
-                               shuffle=False, num_workers=num_workers, pin_memory=True),
+                               shuffle=False, num_workers=num_workers, pin_memory=False),
     }
 
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
@@ -413,7 +413,7 @@ def train_model(trial):
     # Hyperparameters to tune
     num_epochs = num_epochs_optuna  # Use fixed number of epochs for Optuna trials
     early_stopping_patience = early_stopping_patience_optuna  # Use lower patience for Optuna trials
-    batch_size = trial.suggest_categorical('batch_size', [32, 64, 128])
+    batch_size = trial.suggest_categorical('batch_size', [32, 64])  # Reduced batch sizes
     learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
     optimizer_name = trial.suggest_categorical('optimizer', ['Adam', 'SGD'])
@@ -452,9 +452,9 @@ def train_model(trial):
     # Data loaders
     dataloaders = {
         'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
-                            shuffle=True, num_workers=num_workers, pin_memory=True),
+                            shuffle=True, num_workers=num_workers, pin_memory=False),
         'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
-                               shuffle=False, num_workers=num_workers, pin_memory=True),
+                               shuffle=False, num_workers=num_workers, pin_memory=False),
     }
 
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
@@ -539,45 +539,49 @@ def train_model(trial):
                                 total=len(dataloaders[phase]), unit='batch')
 
             # Iterate over data
-            for batch_idx, (inputs, labels, img_names) in progress_bar:
-                inputs = inputs.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
+            try:
+                for batch_idx, (inputs, labels, img_names) in progress_bar:
+                    inputs = inputs.to(device, non_blocking=True)
+                    labels = labels.to(device, non_blocking=True)
 
-                # Zero parameter gradients
-                optimizer.zero_grad()
+                    # Zero parameter gradients
+                    optimizer.zero_grad()
 
-                # Forward pass
-                with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)
-                    loss = criterion(outputs, labels)
-                    preds = torch.sigmoid(outputs)
-                    preds_binary = (preds >= threshold).float()
+                    # Forward pass
+                    with torch.set_grad_enabled(phase == 'train'):
+                        outputs = model(inputs)
+                        loss = criterion(outputs, labels)
+                        preds = torch.sigmoid(outputs)
+                        preds_binary = (preds >= threshold).float()
 
-                    # Backward pass and optimization
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                        # Backward pass and optimization
+                        if phase == 'train':
+                            loss.backward()
+                            optimizer.step()
 
-                    # Collect predictions and labels for Jaccard score calculation
-                    preds_np = preds_binary.detach().cpu().numpy()
-                    labels_np = labels.detach().cpu().numpy()
+                        # Collect predictions and labels for Jaccard score calculation
+                        preds_np = preds_binary.detach().cpu().numpy()
+                        labels_np = labels.detach().cpu().numpy()
 
-                    # Update running Jaccard score
-                    batch_jaccard = jaccard_score(labels_np, preds_np, average='samples', zero_division=0)
-                    running_jaccard += batch_jaccard * inputs.size(0)
+                        # Update running Jaccard score
+                        batch_jaccard = jaccard_score(labels_np, preds_np, average='samples', zero_division=0)
+                        running_jaccard += batch_jaccard * inputs.size(0)
 
-                    if phase == 'validate':
-                        val_predictions.append(preds_np)
-                        val_labels.append(labels_np)
-                        val_img_names.extend(img_names)
+                        if phase == 'validate':
+                            val_predictions.append(preds_np)
+                            val_labels.append(labels_np)
+                            val_img_names.extend(img_names)
 
-                # Statistics
-                running_loss += loss.item() * inputs.size(0)
+                    # Statistics
+                    running_loss += loss.item() * inputs.size(0)
 
-                # Update progress bar
-                batch_loss = running_loss / ((batch_idx + 1) * inputs.size(0))
-                batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
-                progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
+                    # Update progress bar
+                    batch_loss = running_loss / ((batch_idx + 1) * inputs.size(0))
+                    batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
+                    progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
+            except RuntimeError as e:
+                print(f"RuntimeError during {phase} phase: {e}")
+                return float('inf')  # Return a large loss value for Optuna to minimize
 
             # Calculate epoch loss and Jaccard score
             epoch_loss = running_loss / dataset_sizes[phase]
