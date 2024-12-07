@@ -539,7 +539,7 @@ def train_model(trial):
                                 total=len(dataloaders[phase]), unit='batch')
 
             # Iterate over data
-            try:
+11``            try:
                 for batch_idx, (inputs, labels, img_names) in progress_bar:
                     inputs = inputs.to(device, non_blocking=True)
                     labels = labels.to(device, non_blocking=True)
