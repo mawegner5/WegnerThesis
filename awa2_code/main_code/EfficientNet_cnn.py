@@ -777,7 +777,7 @@ if __name__ == '__main__':
     model = train_initial_model()
 
     # Then, run Optuna hyperparameter tuning
-    study = optuna.create_study(direction='minimize')
+    study = optuna.create_study(direction='minimize'
     study.optimize(train_model, n_trials=n_trials)
 
     print('Number of finished trials:', len(study.trials))
