@@ -21,21 +21,23 @@ from PIL import Image
 
 data_dir = '/remote_home/WegnerThesis/animals_with_attributes/animals_w_att_data'
 output_dir = '/remote_home/WegnerThesis/charts_figures_etc'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
 performance_summary_path = os.path.join(output_dir, 'model_performance_summary.csv')
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 num_workers = 0  # Set to 0 to avoid DataLoader worker issues
 
-# Parameters for second round search
-num_epochs = 100  # number of epochs for second round (you can adjust)
-early_stopping_patience = 10
-training_jaccard_threshold = 0.85  # We must reach this training Jaccard before we start validation
-n_trials = 5  # fewer trials for demonstration, can adjust
+# Round 2 parameters
+n_trials = 5  # Number of trials for the second round
+num_epochs = 500  # Train longer to get closer to overfitting
+early_stopping_patience = 50  # Large patience since we're training longer
+training_jaccard_threshold = 0.90  # Train on training set only until this Jaccard is reached before validation
 
 # --------------------------
 #       End of User Settings
 # --------------------------
 
-# Load attribute data
 attributes_csv_path = os.path.join(data_dir, 'predicate_matrix_with_labels.csv')
 attributes_df = pd.read_csv(attributes_csv_path, index_col=0)
 attributes_df.index = attributes_df.index.str.replace(' ', '+')
@@ -196,10 +198,8 @@ def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elaps
         'Training Time (s)': [int(time_elapsed)],
         'Timestamp': [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
     }
-
     for key, value in params.items():
         data[key.capitalize().replace('_', ' ')] = [value]
-
     df = pd.DataFrame(data)
     if os.path.exists(performance_summary_path):
         df_existing = pd.read_csv(performance_summary_path)
@@ -208,42 +208,36 @@ def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elaps
     print(f'Model performance summary updated at {performance_summary_path}')
 
 def load_best_hyperparams():
-    # Read performance summary and find best trial for resnet50 by Best Validation Jaccard
     if not os.path.exists(performance_summary_path):
-        raise FileNotFoundError(f"{performance_summary_path} not found. Run initial training first.")
-
+        raise FileNotFoundError("No performance summary found. Run round 1 first.")
     df = pd.read_csv(performance_summary_path)
-    df_resnet = df[df['Model'] == 'resnet50']
-    if df_resnet.empty:
+    df_res = df[df['Model'] == 'resnet50']
+    if df_res.empty:
         raise ValueError("No entries for resnet50 found in the performance summary.")
 
-    # Find best by highest Best Validation Jaccard
-    best_row = df_resnet.loc[df_resnet['Best Validation Jaccard'].idxmax()]
+    # Select best trial by highest Best Validation Jaccard
+    best_row = df_res.loc[df_res['Best Validation Jaccard'].idxmax()]
+
+    # Extract hyperparams
     best_params = {}
-
-    # We'll assume keys like 'Learning Rate', 'Batch Size', etc. are present
-    # Extracting necessary parameters used in initial search
-    best_params['batch_size'] = best_row.get('Batch size', 32)
-    best_params['learning_rate'] = best_row.get('Learning rate', 1e-4)
-    best_params['weight_decay'] = best_row.get('Weight decay', 1e-5)
     best_params['optimizer'] = best_row.get('Optimizer', 'Adam')
-    best_params['T_0'] = best_row.get('T 0', 10)
-    best_params['threshold'] = best_row.get('Threshold', 0.5)
-    best_params['dropout_rate'] = best_row.get('Dropout rate', 0.5)
-
+    best_params['learning_rate'] = float(best_row.get('Learning rate', 1e-4))
+    best_params['batch_size'] = int(best_row.get('Batch size', 32))
+    best_params['weight_decay'] = float(best_row.get('Weight decay', 1e-5))
+    best_params['T_0'] = int(best_row.get('T 0', 10))
+    best_params['threshold'] = float(best_row.get('Threshold', 0.5))
+    best_params['dropout_rate'] = float(best_row.get('Dropout rate', 0.5))
     return best_params
 
 def get_narrowed_search_space(best_params):
-    # Narrow ranges around best params:
-    # Just an example:
-    learning_rate_center = best_params['learning_rate']
-    # narrow learning rate by a factor of ~2 around center:
-    lr_low = learning_rate_center / 2 if learning_rate_center/2 > 1e-6 else 1e-6
-    lr_high = learning_rate_center * 2
+    # Just as an example, narrow each param range around the best found value:
+    lr_center = best_params['learning_rate']
+    lr_low = max(lr_center/2, 1e-6)
+    lr_high = min(lr_center*2, 1e-2)
 
     wd_center = best_params['weight_decay']
-    wd_low = wd_center / 2 if wd_center/2 > 1e-7 else 1e-7
-    wd_high = wd_center * 2 if wd_center*2 < 1e-3 else 1e-3
+    wd_low = max(wd_center/2, 1e-7)
+    wd_high = min(wd_center*2, 1e-3)
 
     thr_center = best_params['threshold']
     thr_low = max(0.3, thr_center - 0.1)
@@ -257,11 +251,10 @@ def get_narrowed_search_space(best_params):
     T0_low = max(10, T0_center - 10)
     T0_high = min(50, T0_center + 10)
 
-    # For batch size, let's just keep the same choices or pick from [16, 32] again
-    # For optimizer let's keep the previous choices ['Adam', 'SGD']
-
+    # If best batch_size was 32, let's keep same or just a small set:
+    # If best optimizer is known, let's still allow ['Adam', 'SGD']
     return {
-        'batch_size': [16, 32],
+        'batch_size': [best_params['batch_size']] if best_params['batch_size'] in [16,32,64] else [32,64],
         'learning_rate': (lr_low, lr_high),
         'weight_decay': (wd_low, wd_high),
         'optimizer': ['Adam', 'SGD'],
@@ -271,10 +264,6 @@ def get_narrowed_search_space(best_params):
     }
 
 def train_with_warmup(params, trial_number='second_round'):
-    # Implement the two-phase training logic
-    # Phase 1: Train only until training jaccard >= 0.85, no validation
-    # Phase 2: After achieving 0.85 training jaccard, start validation and early stopping
-
     batch_size = params['batch_size']
     learning_rate = params['learning_rate']
     weight_decay = params['weight_decay']
@@ -283,6 +272,7 @@ def train_with_warmup(params, trial_number='second_round'):
     threshold = params['threshold']
     dropout_rate = params['dropout_rate']
 
+    # Long training transformations
     data_transforms = {
         'train': transforms.Compose([
             transforms.RandomResizedCrop(224),
@@ -290,15 +280,13 @@ def train_with_warmup(params, trial_number='second_round'):
             transforms.ColorJitter(),
             transforms.RandomRotation(15),
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225])
+            transforms.Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
         ]),
         'validate': transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225])
+            transforms.Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
         ]),
     }
 
@@ -344,10 +332,11 @@ def train_with_warmup(params, trial_number='second_round'):
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=2)
+
+    # We'll do early stopping only after we start validation
     early_stopping = EarlyStopping(patience=early_stopping_patience, verbose=True)
 
     model_name = 'resnet50_2nd_round'
-
     since = time.time()
 
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -361,8 +350,7 @@ def train_with_warmup(params, trial_number='second_round'):
     train_jaccards = []
     val_jaccards = []
 
-    # Phase tracking
-    reached_85 = False
+    reached_90 = False
 
     for epoch in range(num_epochs):
         print(f'\nEpoch {epoch+1}/{num_epochs}')
@@ -396,7 +384,6 @@ def train_with_warmup(params, trial_number='second_round'):
             batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
             progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
 
-        # End of train epoch
         epoch_loss = running_loss / dataset_sizes['train']
         epoch_jaccard = running_jaccard / dataset_sizes['train']
         train_losses.append(epoch_loss)
@@ -404,13 +391,13 @@ def train_with_warmup(params, trial_number='second_round'):
         scheduler.step()
         print(f'\nTrain Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
-        # Check if we reached 0.85 training jaccard
-        if not reached_85 and epoch_jaccard >= training_jaccard_threshold:
-            reached_85 = True
+        # Check if we reached 0.90 training Jaccard
+        if not reached_90 and epoch_jaccard >= training_jaccard_threshold:
+            reached_90 = True
             print(f"Reached training Jaccard of {training_jaccard_threshold}, starting validation from next epoch.")
 
-        # If we have reached the threshold, do validation and early stopping
-        if reached_85:
+        # Once we have reached the threshold, do validation
+        if reached_90:
             model.eval()
             val_predictions = []
             val_labels = []
@@ -470,6 +457,7 @@ def train_with_warmup(params, trial_number='second_round'):
     torch.save(model.state_dict(), model_save_path)
     print(f'Best model saved to {model_save_path}')
 
+    best_val_loss = val_losses[-1] if val_losses else float('inf')
     if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
         save_predictions(best_val_predictions, best_val_labels, best_val_img_names, trial_number, 'resnet50_2nd_round')
     else:
@@ -477,18 +465,11 @@ def train_with_warmup(params, trial_number='second_round'):
 
     plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial_number, 'resnet50_2nd_round')
 
-    # Use inf if no validation done or best_jaccard=0
-    best_val_loss = val_losses[-1] if val_losses else float('inf')
     save_performance_summary('resnet50_2nd_round', best_jaccard, best_val_loss, time_elapsed, trial_number, params)
 
     return best_val_loss
 
 def optuna_objective(trial):
-    # Use the narrowed search space
-    # We'll sample from the narrowed ranges
-    # best_params loaded from previous step outside objective is not good practice.
-    # Instead, we can define them globally or re-load them here.
-    # For clarity, let's reload best_params each time.
     best_params = load_best_hyperparams()
     space = get_narrowed_search_space(best_params)
 
@@ -510,16 +491,11 @@ def optuna_objective(trial):
         'dropout_rate': dropout_rate
     }
 
-    # Train with warmup logic and return best val loss
     val_loss = train_with_warmup(params, trial_number=trial.number)
     return val_loss
 
 if __name__ == '__main__':
-    # Load best hyperparams from previous runs
-    best_params = load_best_hyperparams()
-    print("Best previous parameters:", best_params)
-
-    # Create Optuna study for second round
+    # Second round search
     study = optuna.create_study(direction='minimize')
     study.optimize(optuna_objective, n_trials=n_trials)
 
