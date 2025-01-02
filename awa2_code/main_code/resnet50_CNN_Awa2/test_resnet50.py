@@ -1,15 +1,12 @@
 ########################################################
 # test_resnet50.py
 #
-# This script loads a trained ResNet50 model (with dropout),
-# evaluates it on the chosen dataset (validate or test),
-# and produces CSV outputs:
-#   1) Per-image CSV: [image_name, actual_species, ground_truth_attributes, predicted_attributes]
-#   2) Per-attribute confusion info: [attribute_name, TP, FP, TN, FN, precision, recall, F1]
+# Revised version: each attribute is stored in its own CSV column, 
+# both actual and predicted. The final CSV columns are:
+#   [image_name, actual_species, actual_<attr1>, ..., actual_<attrN>,
+#    pred_<attr1>, ..., pred_<attrN>]
 #
-# The outputs go to /remote_home/WegnerThesis/test_outputs
-#
-# Adjust as needed for your environment.
+# This eliminates the "invalid literal for int()" issue in AWA2_LLM.py.
 ########################################################
 
 import os
@@ -29,23 +26,18 @@ from sklearn.metrics import jaccard_score, classification_report, confusion_matr
 # User Settings
 ########################################
 
-# Where the best model is saved (from your final training)
 BEST_MODEL_PATH = "/remote_home/WegnerThesis/charts_figures_etc/best_model_resnet50_final.pth"
 
-# Data / Paths
 DATA_DIR = "/remote_home/WegnerThesis/animals_with_attributes/animals_w_att_data"
-OUTPUT_DIR = "/remote_home/WegnerThesis/test_outputs"  # <-- main output directory
-if not os.path.exists(OUTPUT_DIR):
-    os.makedirs(OUTPUT_DIR)
+OUTPUT_DIR = "/remote_home/WegnerThesis/test_outputs"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Choose which dataset to evaluate: "validate" or "test"
-PHASE_TO_EVAL = "test"  # or "validate"
+# Evaluate on "validate" or "test":
+PHASE_TO_EVAL = "validate"
 
-# Model hyperparams used in training
 DROPOUT_RATE = 0.5
-THRESHOLD = 0.5  # For predicted attribute
+THRESHOLD = 0.5
 
-# Dataloader
 BATCH_SIZE = 32
 NUM_WORKERS = 0
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -56,14 +48,12 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 ATTR_MATRIX_CSV = os.path.join(DATA_DIR, "predicate_matrix_with_labels.csv")
 attributes_df = pd.read_csv(ATTR_MATRIX_CSV, index_col=0)
-# Convert any spaces in class names to '+'
 attributes_df.index = attributes_df.index.str.replace(" ", "+")
 attribute_names = attributes_df.columns.tolist()
-classes = attributes_df.index.tolist()
 num_attributes = len(attribute_names)
 
 ########################################
-# Custom Dataset for AWA2
+# Dataset
 ########################################
 
 class AwA2Dataset(Dataset):
@@ -73,7 +63,6 @@ class AwA2Dataset(Dataset):
         self.transform = transform
         self.samples = []
         self.attributes = []
-        # Build mapping from class->attribute vector
         self.class_to_attributes = attributes_df.to_dict(orient="index")
         self._prepare_dataset()
 
@@ -86,32 +75,27 @@ class AwA2Dataset(Dataset):
             if class_name not in self.class_to_attributes:
                 print(f"Warning: Class {class_name} not in attribute list.")
                 continue
-            class_attributes = np.array(list(self.class_to_attributes[class_name].values()), dtype=np.float32)
+            class_attrs = np.array(list(self.class_to_attributes[class_name].values()), dtype=np.float32)
             for img_name in os.listdir(class_dir):
                 img_path = os.path.join(class_dir, img_name)
-                self.samples.append((img_path, img_name, class_name))  # store actual species
-                self.attributes.append(class_attributes)
+                self.samples.append((img_path, img_name, class_name))
+                self.attributes.append(class_attrs)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         img_path, img_name, class_name = self.samples[idx]
-        attributes = self.attributes[idx]
+        attr_vec = self.attributes[idx]
         try:
             image = datasets.folder.default_loader(img_path)
         except Exception as e:
             print(f"Error loading image {img_path}: {e}")
-            # fallback blank image
             image = Image.new("RGB", (224,224))
         if self.transform is not None:
             image = self.transform(image)
-        attributes_tensor = torch.FloatTensor(attributes)
-        return image, attributes_tensor, img_name, class_name
-
-########################################
-# Data Transforms
-########################################
+        attr_tensor = torch.FloatTensor(attr_vec)
+        return image, attr_tensor, img_name, class_name
 
 data_transforms = transforms.Compose([
     transforms.Resize(256),
@@ -120,16 +104,12 @@ data_transforms = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
 ])
 
-########################################
-# Create Dataset / Dataloader
-########################################
-
 eval_dataset = AwA2Dataset(DATA_DIR, PHASE_TO_EVAL, transform=data_transforms)
 eval_loader = DataLoader(eval_dataset, batch_size=BATCH_SIZE, shuffle=False,
                          num_workers=NUM_WORKERS, pin_memory=False)
 
 ########################################
-# Model Definition
+# Model
 ########################################
 
 from torchvision.models import resnet50
@@ -148,10 +128,6 @@ class ResNet50WithDropout(nn.Module):
         x = self.fc(x)
         return x
 
-########################################
-# Load the best model
-########################################
-
 def load_best_model(model_path):
     base_model = resnet50(weights=None)
     model = ResNet50WithDropout(base_model, dropout_rate=DROPOUT_RATE)
@@ -163,96 +139,94 @@ def load_best_model(model_path):
 model = load_best_model(BEST_MODEL_PATH)
 print(f"Loaded best model from {BEST_MODEL_PATH}")
 
-########################################
-# Evaluate
-########################################
-
 def sigmoid_np(x):
     return 1 / (1 + np.exp(-x))
 
-all_results = []   # For CSV with per-image info
-# We'll store [img_name, actual_species, actual_attr_vector, predicted_attr_vector]
+########################################
+# Inference & Data Collection
+########################################
 
-# For confusion matrix, we want to accumulate predictions & ground truth per attribute
 all_preds_binary = []
 all_targets = []
+results_records = []  # to store per-image data
 
 with torch.no_grad():
-    for batch_idx, (inputs, targets, img_names, class_names) in enumerate(eval_loader):
+    for (inputs, targets, img_names, class_names) in eval_loader:
         inputs = inputs.to(DEVICE)
         targets = targets.to(DEVICE)
 
-        outputs = model(inputs)          # shape: [batch_size, num_attributes]
-        # Convert to CPU for post-processing
+        outputs = model(inputs)  # shape [batch, num_attributes]
         outputs_np = outputs.cpu().numpy()
         targets_np = targets.cpu().numpy()
 
-        # We'll do thresholding
         preds_sigmoid = sigmoid_np(outputs_np)
         preds_binary = (preds_sigmoid >= THRESHOLD).astype(int)
 
-        for i in range(inputs.size(0)):
-            # gather info
-            actual_sp = class_names[i]  # string
-            actual_attr = targets_np[i] # shape [num_attributes]
-            pred_attr = preds_binary[i] # shape [num_attributes]
-            img_nm = img_names[i]
-
-            all_results.append([
-                img_nm,
-                actual_sp,
-                actual_attr.tolist(),
-                pred_attr.tolist()
-            ])
-
+        # Accumulate for confusion metrics
         all_preds_binary.append(preds_binary)
         all_targets.append(targets_np)
 
-all_preds_binary = np.concatenate(all_preds_binary, axis=0)  # shape [N, num_attributes]
-all_targets = np.concatenate(all_targets, axis=0)           # shape [N, num_attributes]
+        # Gather rows for each image
+        batch_size_now = inputs.size(0)
+        for i in range(batch_size_now):
+            image_name = img_names[i]
+            actual_species = class_names[i]
+            actual_attr_list = targets_np[i]   # shape [num_attributes]
+            pred_attr_list   = preds_binary[i] # shape [num_attributes]
 
-# we can also compute a multi-label jaccard on the entire dataset
-dataset_jaccard = jaccard_score(all_targets, all_preds_binary, average="samples", zero_division=0)
-print(f"{PHASE_TO_EVAL} dataset Jaccard Score (average='samples'): {dataset_jaccard:.4f}")
+            results_records.append((image_name, actual_species,
+                                    actual_attr_list, pred_attr_list))
+
+all_preds_binary = np.concatenate(all_preds_binary, axis=0)
+all_targets = np.concatenate(all_targets, axis=0)
+
+dataset_jacc = jaccard_score(all_targets, all_preds_binary, average="samples", zero_division=0)
+print(f"{PHASE_TO_EVAL} dataset Jaccard Score (average='samples'): {dataset_jacc:.4f}")
 
 ########################################
 # Save per-image CSV
 ########################################
 
-output_csv_path = os.path.join(OUTPUT_DIR, f"resnet50_{PHASE_TO_EVAL}_predictions.csv")
-with open(output_csv_path, "w", newline="") as f:
+out_csv_path = os.path.join(OUTPUT_DIR, f"resnet50_{PHASE_TO_EVAL}_predictions.csv")
+
+# Build the header with user-friendly names
+header = (["image_name","actual_species"]
+          + [f"Actual_{a}" for a in attribute_names]   # changed label
+          + [f"Predicted_{a}" for a in attribute_names])  # changed label
+
+with open(out_csv_path, "w", newline="") as f:
     writer = csv.writer(f)
-    # headers
-    writer.writerow(["image_name", "actual_species", "actual_attributes", "predicted_attributes"])
-    for row in all_results:
+    writer.writerow(header)
+
+    for rec in results_records:
+        img_nm, sp, actual_vec, pred_vec = rec
+        row = [img_nm, sp]
+        # "Actual_" columns
+        row.extend([int(x) for x in actual_vec])
+        # "Predicted_" columns
+        row.extend([int(x) for x in pred_vec])
         writer.writerow(row)
 
-print(f"Saved per-image predictions to {output_csv_path}")
+print(f"Saved per-image predictions to {out_csv_path}")
+
 
 ########################################
-# Confusion Matrix per attribute
+# Confusion per-attribute
 ########################################
-
-# We'll produce a table [attribute_name, TP, FP, TN, FN, precision, recall, f1]
-# For each attribute k, we gather the entire column of predictions vs. targets
 
 def safe_div(a, b):
-    return a / b if b != 0 else 0
+    return a/b if b else 0
 
 confusion_data = []
-for k, attr_name in enumerate(attribute_names):
-    y_true = all_targets[:, k]
-    y_pred = all_preds_binary[:, k]
-    # confusion_matrix in sklearn can do 2x2 if we label [0,1], but let's get that directly
-    # We want: TP = sum(y_true==1 & y_pred==1), etc.
-    # or we can do
+for i, attr_name in enumerate(attribute_names):
+    y_true = all_targets[:, i]
+    y_pred = all_preds_binary[:, i]
     cm = confusion_matrix(y_true, y_pred, labels=[0,1])
-    # cm is 2x2: cm[0,0] = TN, cm[0,1] = FP, cm[1,0] = FN, cm[1,1] = TP
     tn, fp, fn, tp = cm.ravel()
 
-    prec = safe_div(tp, (tp+fp))
-    rec = safe_div(tp, (tp+fn))
-    f1 = safe_div(2*prec*rec, (prec+rec)) if (prec+rec)>0 else 0
+    prec = safe_div(tp, (tp + fp))
+    rec  = safe_div(tp, (tp + fn))
+    f1   = safe_div(2*prec*rec, (prec+rec)) if (prec+rec)>0 else 0
 
     confusion_data.append({
         "attribute": attr_name,
@@ -271,11 +245,11 @@ confusion_df.to_csv(confusion_csv_path, index=False)
 print(f"Saved attribute confusion metrics to {confusion_csv_path}")
 
 ########################################
-# Possibly we compute classification_report for the entire multi-label set
-# (though classification_report might require one line per attribute)
+# Classification report
 ########################################
 
-report = classification_report(all_targets, all_preds_binary, target_names=attribute_names,
+report = classification_report(all_targets, all_preds_binary,
+                               target_names=attribute_names,
                                output_dict=True, zero_division=0)
 report_df = pd.DataFrame(report).transpose()
 report_csv_path = os.path.join(OUTPUT_DIR, f"resnet50_{PHASE_TO_EVAL}_classification_report.csv")
