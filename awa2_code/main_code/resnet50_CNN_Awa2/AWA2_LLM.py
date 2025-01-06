@@ -50,7 +50,7 @@ PREDICATES_TXT = "/remote_home/WegnerThesis/animals_with_attributes/animals_w_at
 CLASSES_TXT    = "/remote_home/WegnerThesis/animals_with_attributes/animals_w_att_data/classes.txt"
 
 # Use the up-to-date GPT-4 model or a stable snapshot if available
-OPENAI_MODEL_NAME = "gpt-4"
+OPENAI_MODEL_NAME = "gpt-4o-mini"
 
 # ChatGPT params
 MAX_TOKENS = 500
