@@ -33,7 +33,7 @@ OUTPUT_DIR = "/remote_home/WegnerThesis/test_outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Evaluate on "validate" or "test":
-PHASE_TO_EVAL = "validate"
+PHASE_TO_EVAL = "test"
 
 DROPOUT_RATE = 0.5
 THRESHOLD = 0.5

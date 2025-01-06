@@ -1,0 +1,15 @@
+====== RESULTS ANALYSIS REPORT ======
+
+ResNet50 Validation micro-F1: 0.7180
+ResNet50 Test micro-F1: 0.6400
+LLM Validate Top-1 Accuracy (original): 0.025  (synonym-savvy): 0.366
+  (Wrote synonym re-check to: /remote_home/WegnerThesis/test_outputs/LLM_results/top1_chatgpt_predictions_validate_synonyms.csv)
+LLM Validate Top-3 Accuracy (original): 0.367  (synonym-savvy): 0.521
+  (Wrote synonym re-check to: /remote_home/WegnerThesis/test_outputs/LLM_results/top3_chatgpt_predictions_validate_synonyms.csv)
+
+=== Additional Observations / Potential Q&A ===
+* Did the model or LLM frequently confuse certain species? Check the recheck CSV for patterns.
+* Are there attributes with particularly low precision/recall? See the attribute_confusion CSV.
+* If 'bison' was guessed instead of 'buffalo' (and synonyms accounted), we see the synergy.
+* For more advanced analysis, consider partial word overlaps or GPT-based synonyms expansions.
+* Summaries show that synonyms can meaningfully improve LLM top-1 and top-3 metrics.

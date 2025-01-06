@@ -1,0 +1,153 @@
+===== AwA2 Dataset Description =====
+
+=== 1) IMAGES PER SPLIT ===
+ train total images: 29154
+ validate total images: 1183
+ test total images: 6985
+ Grand total images across all splits: 37322
+
+=== 2) IMAGES PER SPECIES (across splits) ===
+  antelope: 1046
+  bat: 383
+  beaver: 193
+  blue+whale: 174
+  bobcat: 630
+  buffalo: 895
+  chihuahua: 567
+  chimpanzee: 728
+  collie: 1028
+  cow: 1338
+  dalmatian: 549
+  deer: 1344
+  dolphin: 946
+  elephant: 1038
+  fox: 664
+  german+shepherd: 1033
+  giant+panda: 874
+  giraffe: 1202
+  gorilla: 872
+  grizzly+bear: 852
+  hamster: 779
+  hippopotamus: 684
+  horse: 1645
+  humpback+whale: 709
+  killer+whale: 291
+  leopard: 720
+  lion: 1019
+  mole: 100
+  moose: 704
+  mouse: 185
+  otter: 758
+  ox: 728
+  persian+cat: 747
+  pig: 713
+  polar+bear: 868
+  rabbit: 1088
+  raccoon: 512
+  rat: 310
+  rhinoceros: 696
+  seal: 988
+  sheep: 1420
+  siamese+cat: 500
+  skunk: 188
+  spider+monkey: 291
+  squirrel: 1200
+  tiger: 877
+  walrus: 215
+  weasel: 272
+  wolf: 589
+  zebra: 1170
+
+=== 3) APPROX. ATTRIBUTE DISTRIBUTION ===
+(If species declared an attribute=1, all its images are counted.)
+  oldworld: 34097 images
+  quadrapedal: 33616 images
+  ground: 32567 images
+  walks: 31577 images
+  chewteeth: 31030 images
+  fast: 29831 images
+  furry: 29666 images
+  newworld: 29473 images
+  tail: 29463 images
+  active: 27725 images
+  strong: 27285 images
+  big: 26535 images
+  timid: 25839 images
+  brown: 24533 images
+  agility: 24325 images
+  smart: 24201 images
+  group: 24182 images
+  black: 22739 images
+  muscle: 22457 images
+  vegetation: 21823 images
+  forager: 18811 images
+  smelly: 18675 images
+  lean: 18662 images
+  inactive: 18614 images
+  white: 18333 images
+  bulbous: 18253 images
+  toughskin: 17876 images
+  solitary: 17796 images
+  plains: 17688 images
+  paws: 17393 images
+  gray: 17092 images
+  grazer: 16443 images
+  domestic: 15856 images
+  fields: 15408 images
+  slow: 15133 images
+  meatteeth: 14984 images
+  claws: 14447 images
+  forest: 14440 images
+  fierce: 13991 images
+  patches: 13616 images
+  meat: 13283 images
+  nestspot: 13112 images
+  hooves: 12901 images
+  longleg: 12842 images
+  small: 12111 images
+  hunter: 11782 images
+  fish: 10695 images
+  pads: 10461 images
+  bush: 10140 images
+  mountains: 9947 images
+  spots: 9335 images
+  buckteeth: 8224 images
+  jungle: 8182 images
+  hairless: 8114 images
+  horns: 7953 images
+  stalker: 7752 images
+  nocturnal: 7124 images
+  hibernate: 6864 images
+  tree: 6210 images
+  bipedal: 6068 images
+  longneck: 6065 images
+  weak: 5957 images
+  swims: 5826 images
+  water: 5826 images
+  arctic: 5296 images
+  coastal: 4968 images
+  ocean: 4949 images
+  flippers: 4081 images
+  yellow: 3571 images
+  orange: 3373 images
+  hops: 3067 images
+  scavenger: 2847 images
+  stripes: 2747 images
+  blue: 2576 images
+  cave: 2454 images
+  strainteeth: 2266 images
+  tusks: 1949 images
+  hands: 1891 images
+  tunnels: 1646 images
+  insects: 1521 images
+  plankton: 1174 images
+  desert: 1019 images
+  skimmer: 883 images
+  red: 664 images
+  flys: 383 images
+
+=== 4) IMAGE DIMENSION STATS (sample-based) ===
+Used up to 200 random images to measure dimension.
+  #sampled: 200
+  Width range:  233.0 - 1920.0 ; mean=916.33
+  Height range: 194.0 - 1893.0 ; mean=711.01
