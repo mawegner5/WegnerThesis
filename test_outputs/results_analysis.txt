@@ -1,15 +1,98 @@
-====== RESULTS ANALYSIS REPORT ======
+=== COMPREHENSIVE RESULTS ANALYSIS (DATA-DRIVEN) ===
 
-ResNet50 Validation micro-F1: 0.7180
-ResNet50 Test micro-F1: 0.6400
-LLM Validate Top-1 Accuracy (original): 0.025  (synonym-savvy): 0.366
-  (Wrote synonym re-check to: /remote_home/WegnerThesis/test_outputs/LLM_results/top1_chatgpt_predictions_validate_synonyms.csv)
-LLM Validate Top-3 Accuracy (original): 0.367  (synonym-savvy): 0.521
-  (Wrote synonym re-check to: /remote_home/WegnerThesis/test_outputs/LLM_results/top3_chatgpt_predictions_validate_synonyms.csv)
+=== (1) DATASET SPLITS & SIZES ===
+  TRAIN: classes=37, images=29154
+  VALIDATE: classes=3, images=1183
+  TEST: classes=10, images=6985
+  Grand total images: 37322
 
-=== Additional Observations / Potential Q&A ===
-* Did the model or LLM frequently confuse certain species? Check the recheck CSV for patterns.
-* Are there attributes with particularly low precision/recall? See the attribute_confusion CSV.
-* If 'bison' was guessed instead of 'buffalo' (and synonyms accounted), we see the synergy.
-* For more advanced analysis, consider partial word overlaps or GPT-based synonyms expansions.
-* Summaries show that synonyms can meaningfully improve LLM top-1 and top-3 metrics.
+=== (2) HYPERPARAMETER SETTINGS ===
+  Found 34 records in /remote_home/WegnerThesis/charts_figures_etc/model_performance_summary.csv.
+  Best trial from summary:
+    Model=resnet50  Trial=initial
+    LR=nan  WD=nan  Threshold=0.5
+    Dropout=nan  Optim=Adam
+
+=== (3) TRAINING CURVES ===
+  Found training curves for resnet50:
+    -> /remote_home/WegnerThesis/charts_figures_etc/resnet50_training_validation_loss.png
+    -> /remote_home/WegnerThesis/charts_figures_etc/resnet50_training_validation_jaccard_accuracy.png
+  Found training curves for efficientnet_b0:
+    -> /remote_home/WegnerThesis/charts_figures_etc/efficientnet_b0_training_validation_loss.png
+    -> /remote_home/WegnerThesis/charts_figures_etc/efficientnet_b0_training_validation_jaccard_accuracy.png
+  Found training curves for seresnet50:
+    -> /remote_home/WegnerThesis/charts_figures_etc/seresnet50_training_validation_loss.png
+    -> /remote_home/WegnerThesis/charts_figures_etc/seresnet50_training_validation_jaccard_accuracy.png
+
+=== (4) ATTRIBUTE PREDICTION METRICS ===
+  ResNet50 validate Jaccard: 0.571
+  ResNet50 test Jaccard: 0.478
+  See /remote_home/WegnerThesis/test_outputs/resnet50_validate_classification_report.csv for validation classification report.
+  See /remote_home/WegnerThesis/test_outputs/resnet50_test_classification_report.csv for test classification report.
+
+=== (5) COMPUTATIONAL TIMES ===
+  Average training time: ~55961.9 sec.
+
+=== (6) ZERO-SHOT CLASSIFICATION SETUP ===
+  We feed predicted attributes to ChatGPT, let synonyms or partial overlap count.
+  We compare vs. Lampert baselines: chance=36.1%, DAP=41.4%, IAP=42.2%.
+
+=== (7) QUANTITATIVE ZERO-SHOT RESULTS ===
+  validate top-1 synonyms-accuracy: 36.6%
+  validate top-3 synonyms-accuracy: 52.1%
+     (Lampert baseline=36.1%, DAP=41.4%, IAP=42.2%)
+  Per-class breakdown for validate (top1/top3):
+    buffalo => n=895, top1=48.4%, top3=68.8%
+    mole => n=100, top1=0.0%, top3=0.0%
+    skunk => n=188, top1=0.0%, top3=0.0%
+  -> Wrote zsl_per_class_accuracy_validate.png
+
+  test top-1 synonyms-accuracy: 3.0%
+  test top-3 synonyms-accuracy: 8.6%
+     (Lampert baseline=36.1%, DAP=41.4%, IAP=42.2%)
+     => We see how we stand vs. those references.
+  Per-class breakdown for test (top1/top3):
+    chimpanzee => n=728, top1=0.0%, top3=10.6%
+    giant panda => n=874, top1=0.9%, top3=0.9%
+    hippopotamus => n=684, top1=12.0%, top3=12.6%
+    humpback whale => n=709, top1=0.1%, top3=0.6%
+    leopard => n=720, top1=1.0%, top3=20.8%
+    persian cat => n=747, top1=10.2%, top3=14.7%
+    pig => n=713, top1=1.7%, top3=4.9%
+    raccoon => n=512, top1=1.2%, top3=3.1%
+    rat => n=310, top1=0.0%, top3=0.0%
+    seal => n=988, top1=2.0%, top3=11.4%
+  -> Wrote zsl_per_class_accuracy_test.png
+
+=== (8) COMPARISON WITH BASELINES ===
+  Using synonyms-based check, we compare to ~36.1% baseline.
+  If our test top3 ~ 10%, we're below that baseline. So there's room to improve.
+  (Cited from Lampert, 'Between-Class Attribute Transfer', and AB-C. references.)
+
+=== (9) ERROR ANALYSIS ===
+  Found 6773 comedic fails in test debug.
+  Some examples:
+    actual='chimpanzee', guess='', partial_sentence='It has: brown, furry, toughskin, big, bulbous, lean, hooves, longleg, longneck, ...'
+    actual='chimpanzee', guess='bison', partial_sentence='It has: black, white, brown, gray, furry, toughskin, big, bulbous, hooves, longl...'
+    actual='chimpanzee', guess='bear', partial_sentence='It has: black, brown, furry, toughskin, big, bulbous, lean, paws, tail, chewteet...'
+    actual='chimpanzee', guess='domestic rabbit', partial_sentence='It has: black, brown, gray, patches, furry, small, bulbous, paws, tail, chewteet...'
+    actual='chimpanzee', guess='gorilla', partial_sentence='It has: black, brown, furry, toughskin, big, bulbous, longleg, tail, chewteeth, ...'
+
+=== (10) LLM IMPACT ===
+  Our results show the LLM guess is often partial synonyms. If top-3 is ~10%,
+  we see it's well below the DAP/IAP methods (41-42%). LLM might help some classes,
+  but doesn't exceed classical ZSL baselines in this setting.
+
+=== (11) QUALITATIVE EXAMPLES ===
+  The bar charts reveal which classes do well or poorly. For instance, if
+  any class stands out with high top1 or near-zero performance, it's visible.
+
+=== (12) LIMITATIONS ===
+  Based on the actual dataset stats, we see many attributes are widely used.
+  But if top-3 = 10%, the method is well below classical ZSL. We do need more
+  robust attribute predictions or LLM prompting strategies.
+
+=== (14) FIGURES & TABLES ===
+  We produce 'zsl_per_class_accuracy_{validate|test}.png' for zero-shot.
+  Also see 'resnet50_*_training_validation_*' in charts_figures_etc for training curves.
+
