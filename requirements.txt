@@ -34,3 +34,9 @@ ray[tune]==2.7.1
 # Ensuring compatibility with Ray Tune
 pydantic==2.9.2
 optuna
+
+# Additional common requirements for robustness
+requests==2.31.0
+protobuf==3.20.3
+PyYAML==6.0
+wheel

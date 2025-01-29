@@ -27,12 +27,12 @@ val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
 # Model configuration
-model_name = 'seresnet50'    # Options: 'seresnet18', 'seresnet34', 'seresnet50', 'seresnet101', 'seresnet152'
+model_name = 'seresnet50'  # Options: 'seresnet18', 'seresnet34', 'seresnet50', 'seresnet101', 'seresnet152'
 
 # Training parameters for initial training
-num_epochs_initial = 150       # Number of epochs for initial training
-early_stopping_patience_initial = 25  # Early stopping patience for initial training
-batch_size = 32                # Adjust based on your GPU memory
+num_epochs_initial = 150
+early_stopping_patience_initial = 25
+batch_size = 32
 learning_rate = 1e-4
 weight_decay = 1e-5
 optimizer_name = 'Adam'
@@ -41,9 +41,9 @@ dropout_rate = 0.5
 T_0 = 10  # For CosineAnnealingWarmRestarts
 
 # Optuna hyperparameter tuning parameters
-n_trials = 7                  # Number of trials for Optuna
-num_epochs_optuna = 50         # Number of epochs for Optuna trials
-early_stopping_patience_optuna = 10   # Early stopping patience for Optuna trials
+n_trials = 3                  # Reduced from 7 to 3
+num_epochs_optuna = 50
+early_stopping_patience_optuna = 10
 
 # Output directory for saving predictions and reports
 output_dir = '/remote_home/WegnerThesis/charts_figures_etc'
@@ -57,20 +57,17 @@ performance_summary_path = os.path.join(output_dir, 'model_performance_summary.c
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # Number of worker processes for data loading
-num_workers = 0  # Set to 0 to avoid DataLoader worker issues
+num_workers = 0
 
 # Input size for SE-ResNet models
-input_size = 224  # SE-ResNet models use 224x224 images
+input_size = 224
 
 # --------------------------
 #       End of User Settings
 # --------------------------
 
-# Load attribute names and class-attribute matrix from CSV
 attributes_csv_path = os.path.join(data_dir, 'predicate_matrix_with_labels.csv')
 attributes_df = pd.read_csv(attributes_csv_path, index_col=0)
-
-# Adjust class names to match directory naming
 attributes_df.index = attributes_df.index.str.replace(' ', '+')
 attributes = attributes_df.values
 attribute_names = attributes_df.columns.tolist()
@@ -97,7 +94,6 @@ class AwA2Dataset(Dataset):
                 print(f"Warning: Class {class_name} not found in attribute list.")
                 continue
             class_attributes = np.array(list(self.class_to_attributes[class_name].values()), dtype=np.float32)
-
             for img_name in os.listdir(class_dir):
                 img_path = os.path.join(class_dir, img_name)
                 self.samples.append((img_path, img_name))
@@ -164,17 +160,20 @@ def save_predictions(predictions, labels, img_names, trial_number, model_name):
     predictions = np.asarray(predictions)
     labels = np.asarray(labels)
     img_names = np.asarray(img_names)
+
     if trial_number == 'initial':
         filename = f'predictions_{model_name}.csv'
     else:
         filename = f'predictions_{model_name}_trial{trial_number}.csv'
+
     output_path = os.path.join(output_dir, filename)
     df_predictions = pd.DataFrame(predictions.astype(int), columns=attribute_names)
     df_predictions.insert(0, 'image_name', img_names)
     df_predictions.to_csv(output_path, index=False)
     print(f'Validation predictions saved to {output_path}')
 
-    report = classification_report(labels.astype(int), predictions.astype(int), target_names=attribute_names, output_dict=True, zero_division=0)
+    report = classification_report(labels.astype(int), predictions.astype(int),
+                                   target_names=attribute_names, output_dict=True, zero_division=0)
     report_df = pd.DataFrame(report).transpose()
     if trial_number == 'initial':
         report_filename = f'classification_report_{model_name}.csv'
@@ -186,6 +185,7 @@ def save_predictions(predictions, labels, img_names, trial_number, model_name):
 
 def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial_number, model_name):
     epochs = range(1, len(train_losses) + 1)
+
     if trial_number == 'initial':
         loss_plot_filename = f'{model_name}_training_validation_loss.png'
         acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy.png'
@@ -193,6 +193,7 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
         loss_plot_filename = f'{model_name}_training_validation_loss_trial{trial_number}.png'
         acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy_trial{trial_number}.png'
 
+    # Plot Loss
     plt.figure()
     plt.plot(epochs, train_losses, 'b-', label='Training Loss')
     plt.plot(epochs, val_losses, 'r-', label='Validation Loss')
@@ -205,6 +206,7 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
     plt.close()
     print(f'Training and validation loss plot saved to {loss_plot_path}')
 
+    # Plot Jaccard Accuracy
     plt.figure()
     plt.plot(epochs, train_jaccards, 'b-', label='Training Jaccard Accuracy')
     plt.plot(epochs, val_jaccards, 'r-', label='Validation Jaccard Accuracy')
@@ -228,6 +230,7 @@ def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elaps
         'Training Time (s)': [int(time_elapsed)],
         'Timestamp': [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
     }
+
     for key, value in params.items():
         data[key.capitalize().replace('_', ' ')] = [value]
 
@@ -267,13 +270,17 @@ def train_initial_model():
     }
 
     dataloaders = {
-        'train': DataLoader(datasets_dict['train'], batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=False),
-        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False),
+        'train': DataLoader(datasets_dict['train'], batch_size=batch_size, shuffle=True,
+                            num_workers=num_workers, pin_memory=False),
+        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size, shuffle=False,
+                               num_workers=num_workers, pin_memory=False),
     }
 
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
 
+    # Create SE-ResNet model with timm
     model = timm.create_model(model_name, pretrained=False, num_classes=num_attributes)
+
     # Modify the classifier with dropout
     num_ftrs = model.get_classifier().in_features
     model.reset_classifier(num_classes=num_attributes, global_pool='avg')
@@ -281,13 +288,12 @@ def train_initial_model():
         nn.Dropout(p=dropout_rate),
         nn.Linear(num_ftrs, num_attributes)
     )
-    model = model.to(device)  # Ensure model on device after modification
+    model = model.to(device)
 
     criterion = SoftJaccardLoss()
-
     if optimizer_name == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    elif optimizer_name == 'SGD':
+    else:
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=2)
@@ -322,15 +328,14 @@ def train_initial_model():
 
             running_loss = 0.0
             running_jaccard = 0.0
-
             progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}",
                                 total=len(dataloaders[phase]), unit='batch')
             try:
                 for batch_idx, (inputs, labels, img_names) in progress_bar:
                     inputs = inputs.to(device)
                     labels = labels.to(device)
-
                     optimizer.zero_grad()
+
                     with torch.set_grad_enabled(phase == 'train'):
                         outputs = model(inputs)
                         loss = criterion(outputs, labels)
@@ -358,7 +363,6 @@ def train_initial_model():
 
                 epoch_loss = running_loss / dataset_sizes[phase]
                 epoch_jaccard = running_jaccard / dataset_sizes[phase]
-
                 print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
                 if phase == 'train':
@@ -386,7 +390,6 @@ def train_initial_model():
 
             except RuntimeError as e:
                 print(f"RuntimeError during {phase} phase: {e}")
-                # If a runtime error occurred before epoch_loss could be set, set it now
                 if epoch_loss is None:
                     epoch_loss = float('inf')
                 break
@@ -428,7 +431,7 @@ def train_initial_model():
     return model
 
 def optuna_objective(trial):
-    # Hyperparameters to tune with Optuna
+    # Hyperparameters to tune
     num_epochs = num_epochs_optuna
     early_stopping_patience = early_stopping_patience_optuna
     batch_size_ = trial.suggest_categorical('batch_size', [16, 32])
@@ -464,8 +467,10 @@ def optuna_objective(trial):
     }
 
     dataloaders = {
-        'train': DataLoader(datasets_dict['train'], batch_size=batch_size_, shuffle=True, num_workers=num_workers, pin_memory=False),
-        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size_, shuffle=False, num_workers=num_workers, pin_memory=False),
+        'train': DataLoader(datasets_dict['train'], batch_size=batch_size_, shuffle=True,
+                            num_workers=num_workers, pin_memory=False),
+        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size_, shuffle=False,
+                               num_workers=num_workers, pin_memory=False),
     }
 
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
@@ -480,10 +485,9 @@ def optuna_objective(trial):
     model = model.to(device)
 
     criterion = SoftJaccardLoss()
-
     if optimizer_name_ == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate_, weight_decay=weight_decay_)
-    elif optimizer_name_ == 'SGD':
+    else:
         optimizer = optim.SGD(model.parameters(), lr=learning_rate_, weight_decay=weight_decay_, momentum=0.9)
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0_, T_mult=2)
@@ -518,15 +522,14 @@ def optuna_objective(trial):
 
             running_loss = 0.0
             running_jaccard = 0.0
-
             progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}",
                                 total=len(dataloaders[phase]), unit='batch')
             try:
                 for batch_idx, (inputs, labels, img_names) in progress_bar:
                     inputs = inputs.to(device)
                     labels = labels.to(device)
-
                     optimizer.zero_grad()
+
                     with torch.set_grad_enabled(phase == 'train'):
                         outputs = model(inputs)
                         loss = criterion(outputs, labels)
@@ -554,7 +557,6 @@ def optuna_objective(trial):
 
                 epoch_loss = running_loss / dataset_sizes[phase]
                 epoch_jaccard = running_jaccard / dataset_sizes[phase]
-
                 print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
                 if phase == 'train':
@@ -612,10 +614,8 @@ def optuna_objective(trial):
     return epoch_loss
 
 if __name__ == '__main__':
-    # First, train the initial model
     model = train_initial_model()
 
-    # Then, run Optuna hyperparameter tuning
     study = optuna.create_study(direction='minimize')
     study.optimize(optuna_objective, n_trials=n_trials)
 

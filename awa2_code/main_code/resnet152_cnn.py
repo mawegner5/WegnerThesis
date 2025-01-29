@@ -19,65 +19,48 @@ from PIL import Image
 # User-Modifiable Parameters
 # --------------------------
 
-# Data directories
 data_dir = '/remote_home/WegnerThesis/animals_with_attributes/animals_w_att_data'
 train_dir = os.path.join(data_dir, 'train')
 val_dir = os.path.join(data_dir, 'validate')
 test_dir = os.path.join(data_dir, 'test')
 
-# Model configuration
 model_name = 'resnet152'  # Using ResNet-152
 
-# Training parameters
-num_epochs_initial = 150       # Number of epochs for initial training
-early_stopping_patience_initial = 25  # Early stopping patience for initial training
-batch_size = 32                # Adjust based on your GPU memory
-learning_rate = 1e-4
+num_epochs_initial = 150
+early_stopping_patience_initial = 25
+batch_size = 32
+learning_rate = 1e-5  # Lowered learning rate to help avoid NaNs
 weight_decay = 1e-5
 optimizer_name = 'Adam'
 threshold = 0.5
 dropout_rate = 0.5
-T_0 = 10  # For CosineAnnealingWarmRestarts
+T_0 = 10
 
 # Optuna hyperparameter tuning parameters
-n_trials = 7                  # Number of trials for Optuna
-num_epochs_optuna = 50         # Number of epochs for Optuna trials
-early_stopping_patience_optuna = 10   # Early stopping patience for Optuna trials
+n_trials = 7
+num_epochs_optuna = 50
+early_stopping_patience_optuna = 10
 
-# Output directory for saving predictions and reports
 output_dir = '/remote_home/WegnerThesis/charts_figures_etc'
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
-# Path to the model performance summary file
 performance_summary_path = os.path.join(output_dir, 'model_performance_summary.csv')
 
-# Device configuration
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-# Number of worker processes for data loading
-num_workers = 0  # Set to 0 to avoid DataLoader worker issues
-
-# Input size for ResNet models
+num_workers = 0
 input_size = 224  # ResNet models use 224x224 images
 
 # --------------------------
 #       End of User Settings
 # --------------------------
 
-# Load attribute names and class-attribute matrix from CSV
 attributes_csv_path = os.path.join(data_dir, 'predicate_matrix_with_labels.csv')
 attributes_df = pd.read_csv(attributes_csv_path, index_col=0)
-
-# Adjust class names to match directory names (replace spaces with '+')
 attributes_df.index = attributes_df.index.str.replace(' ', '+')
-attributes = attributes_df.values  # Convert DataFrame to NumPy array
 attribute_names = attributes_df.columns.tolist()
-classes = attributes_df.index.tolist()
-
 num_attributes = len(attribute_names)
 
-# Custom dataset to include attributes and image names
 class AwA2Dataset(Dataset):
     def __init__(self, root_dir, phase, transform=None):
         self.root_dir = root_dir
@@ -85,11 +68,7 @@ class AwA2Dataset(Dataset):
         self.transform = transform
         self.samples = []
         self.attributes = []
-
-        # Map class names to attributes
         self.class_to_attributes = attributes_df.to_dict(orient='index')
-
-        # Prepare the dataset
         self._prepare_dataset()
 
     def _prepare_dataset(self):
@@ -102,10 +81,9 @@ class AwA2Dataset(Dataset):
                 print(f"Warning: Class {class_name} not found in attribute list.")
                 continue
             class_attributes = np.array(list(self.class_to_attributes[class_name].values()), dtype=np.float32)
-
             for img_name in os.listdir(class_dir):
                 img_path = os.path.join(class_dir, img_name)
-                self.samples.append((img_path, img_name))  # Store both path and name
+                self.samples.append((img_path, img_name))
                 self.attributes.append(class_attributes)
 
     def __len__(self):
@@ -118,35 +96,26 @@ class AwA2Dataset(Dataset):
             image = datasets.folder.default_loader(img_path)
         except Exception as e:
             print(f"Error loading image {img_path}: {e}")
-            # Create a blank image in case of error
             image = Image.new('RGB', (input_size, input_size))
         if self.transform is not None:
             image = self.transform(image)
         attributes = torch.FloatTensor(attributes)
-        return image, attributes, img_name  # Return image name
+        return image, attributes, img_name
 
-# Define soft Jaccard loss function
 class SoftJaccardLoss(nn.Module):
     def __init__(self):
         super(SoftJaccardLoss, self).__init__()
 
     def forward(self, outputs, targets):
         eps = 1e-7
-        outputs = torch.sigmoid(outputs)  # Ensuring sigmoid activation
+        outputs = torch.sigmoid(outputs)
         intersection = (outputs * targets).sum(dim=1)
         union = (outputs + targets - outputs * targets).sum(dim=1)
         loss = 1 - (intersection + eps) / (union + eps)
         return loss.mean()
 
-# Early stopping class
 class EarlyStopping:
     def __init__(self, patience=10, verbose=False, delta=0):
-        """
-        Args:
-            patience (int): How long to wait after last time validation loss improved.
-            verbose (bool): If True, prints a message for each validation loss improvement.
-            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
-        """
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
@@ -175,19 +144,17 @@ class EarlyStopping:
             self.counter = 0
 
 def train_initial_model():
-    # Set parameters for initial training
     num_epochs = num_epochs_initial
     early_stopping_patience = early_stopping_patience_initial
 
-    # Data transformations with data augmentation for training
+    # Slightly safer data augmentation
     data_transforms = {
         'train': transforms.Compose([
             transforms.RandomResizedCrop(input_size),
             transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(),
-            transforms.RandomRotation(15),
+            # Reduced rotation angle; removed ColorJitter to reduce instability
+            transforms.RandomRotation(5),
             transforms.ToTensor(),
-            # Normalization values are standard for ImageNet
             transforms.Normalize([0.485, 0.456, 0.406],
                                  [0.229, 0.224, 0.225])
         ]),
@@ -195,67 +162,48 @@ def train_initial_model():
             transforms.Resize(input_size + 32),
             transforms.CenterCrop(input_size),
             transforms.ToTensor(),
-            # Normalization values are standard for ImageNet
             transforms.Normalize([0.485, 0.456, 0.406],
                                  [0.229, 0.224, 0.225])
         ]),
     }
 
-    # Load datasets
     datasets_dict = {
         'train': AwA2Dataset(data_dir, 'train', transform=data_transforms['train']),
         'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms['validate']),
     }
 
-    # Data loaders
     dataloaders = {
-        'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
-                            shuffle=True, num_workers=num_workers, pin_memory=False),
-        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
-                               shuffle=False, num_workers=num_workers, pin_memory=False),
+        'train': DataLoader(datasets_dict['train'], batch_size=batch_size, shuffle=True,
+                            num_workers=num_workers, pin_memory=False),
+        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size, shuffle=False,
+                               num_workers=num_workers, pin_memory=False),
     }
-
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
 
-    # Load ResNet-152 model
     from torchvision.models import resnet152
-
     model = resnet152(weights=None)
 
-    # Modify the final layer to match the number of attributes and add dropout
     num_ftrs = model.fc.in_features
     model.fc = nn.Sequential(
         nn.Dropout(p=dropout_rate),
-        nn.Linear(num_ftrs, num_attributes),
+        nn.Linear(num_ftrs, num_attributes)
     )
     model = model.to(device)
 
-    # Instantiate the loss function
     criterion = SoftJaccardLoss()
 
-    # Define optimizer
     if optimizer_name == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    elif optimizer_name == 'SGD':
+    else:
         optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
 
-    # Define learning rate scheduler (CosineAnnealingWarmRestarts)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=2)
-
-    # Instantiate early stopping
     early_stopping = EarlyStopping(patience=early_stopping_patience, verbose=True)
 
     since = time.time()
-
     best_model_wts = copy.deepcopy(model.state_dict())
     best_jaccard = 0.0
 
-    # Variables to store best validation results
-    best_val_predictions = None
-    best_val_labels = None
-    best_val_img_names = None
-
-    # Lists to store loss and jaccard scores
     train_losses = []
     val_losses = []
     train_jaccards = []
@@ -265,100 +213,88 @@ def train_initial_model():
         print(f'\nEpoch {epoch+1}/{num_epochs}')
         print('-' * 10)
 
-        # Each epoch has a training and validation phase
         for phase in ['train', 'validate']:
             if phase == 'train':
-                model.train()  # Training mode
+                model.train()
             else:
-                model.eval()   # Evaluation mode
-                val_predictions = []
-                val_labels = []
-                val_img_names = []
+                model.eval()
 
             running_loss = 0.0
             running_jaccard = 0.0
+            sample_count = 0
 
-            progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}",
-                                total=len(dataloaders[phase]), unit='batch')
+            progress_bar = tqdm(enumerate(dataloaders[phase]),
+                                desc=f"{phase.capitalize()} Epoch {epoch+1}",
+                                total=len(dataloaders[phase]),
+                                unit='batch')
 
-            # Iterate over data
-            try:
-                for batch_idx, (inputs, labels, img_names) in progress_bar:
-                    inputs = inputs.to(device)
-                    labels = labels.to(device)
+            for batch_idx, (inputs, labels, img_names) in progress_bar:
+                inputs, labels = inputs.to(device), labels.to(device)
+                optimizer.zero_grad()
 
-                    # Zero parameter gradients
-                    optimizer.zero_grad()
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
 
-                    # Forward pass
-                    with torch.set_grad_enabled(phase == 'train'):
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                        preds = torch.sigmoid(outputs)
-                        preds_binary = (preds >= threshold).float()
+                    # Check for NaN
+                    if torch.isnan(loss):
+                        print("Warning: NaN loss encountered. Skipping this batch.")
+                        continue
 
-                        # Backward pass and optimization
-                        if phase == 'train':
-                            loss.backward()
-                            optimizer.step()
+                    preds = torch.sigmoid(outputs)
+                    preds_binary = (preds >= threshold).float()
 
-                        # Collect predictions and labels for Jaccard score calculation
-                        preds_np = preds_binary.detach().cpu().numpy()
-                        labels_np = labels.detach().cpu().numpy()
+                    if phase == 'train':
+                        loss.backward()
+                        # Gradient clipping
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        optimizer.step()
 
-                        # Update running Jaccard score
-                        batch_jaccard = jaccard_score(labels_np, preds_np, average='samples', zero_division=0)
-                        running_jaccard += batch_jaccard * inputs.size(0)
-
-                        if phase == 'validate':
-                            val_predictions.append(preds_np)
-                            val_labels.append(labels_np)
-                            val_img_names.extend(img_names)
-
-                    # Statistics
+                    batch_jaccard = jaccard_score(labels.cpu().numpy(),
+                                                  preds_binary.cpu().numpy(),
+                                                  average='samples',
+                                                  zero_division=0)
+                    running_jaccard += batch_jaccard * inputs.size(0)
                     running_loss += loss.item() * inputs.size(0)
+                    sample_count += inputs.size(0)
 
-                    # Update progress bar
-                    batch_loss = running_loss / ((batch_idx + 1) * inputs.size(0))
-                    batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
-                    progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
-
-                # Calculate epoch loss and Jaccard score
-                epoch_loss = running_loss / dataset_sizes[phase]
-                epoch_jaccard = running_jaccard / dataset_sizes[phase]
-
-                print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
-
-                # Store losses and jaccards
-                if phase == 'train':
-                    train_losses.append(epoch_loss)
-                    train_jaccards.append(epoch_jaccard)
-                    scheduler.step()  # Update learning rate
+                if sample_count > 0:
+                    current_loss = running_loss / sample_count
+                    current_jaccard = running_jaccard / sample_count
                 else:
-                    val_losses.append(epoch_loss)
-                    val_jaccards.append(epoch_jaccard)
+                    current_loss = 0.0
+                    current_jaccard = 0.0
 
-                    early_stopping(epoch_loss)
+                progress_bar.set_postfix({
+                    'Loss': f'{current_loss:.4f}',
+                    'Jaccard': f'{current_jaccard:.4f}'
+                })
 
-                    # Concatenate all predictions and labels
-                    val_predictions = np.vstack(val_predictions)
-                    val_labels = np.vstack(val_labels)
+            if sample_count > 0:
+                epoch_loss = running_loss / sample_count
+                epoch_jaccard = running_jaccard / sample_count
+            else:
+                epoch_loss = 0.0
+                epoch_jaccard = 0.0
 
-                    # Update best model if validation Jaccard improved
-                    if epoch_jaccard > best_jaccard:
-                        best_jaccard = epoch_jaccard
-                        best_model_wts = copy.deepcopy(model.state_dict())
-                        best_val_predictions = val_predictions
-                        best_val_labels = val_labels
-                        best_val_img_names = val_img_names
+            print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
-                    if early_stopping.early_stop:
-                        print("Early stopping")
-                        break
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_jaccards.append(epoch_jaccard)
+                scheduler.step()
+            else:
+                val_losses.append(epoch_loss)
+                val_jaccards.append(epoch_jaccard)
+                early_stopping(epoch_loss)
 
-            except RuntimeError as e:
-                print(f"RuntimeError during {phase} phase: {e}")
-                break
+                if epoch_jaccard > best_jaccard:
+                    best_jaccard = epoch_jaccard
+                    best_model_wts = copy.deepcopy(model.state_dict())
+
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
 
         if early_stopping.early_stop:
             break
@@ -367,59 +303,70 @@ def train_initial_model():
     print(f'\nTraining complete in {int(time_elapsed // 60)}m {int(time_elapsed % 60)}s')
     print(f'Best Validation Jaccard Score: {best_jaccard:.4f}')
 
-    # Load best model weights
     model.load_state_dict(best_model_wts)
-
-    # Save the best model weights with model name in filename
     model_save_path = os.path.join(output_dir, f'best_model_{model_name}.pth')
     torch.save(model.state_dict(), model_save_path)
     print(f'Best model saved to {model_save_path}')
 
-    # Save validation predictions and labels to file
-    if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
-        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, 'initial', model_name)
+    # Final validation to save predictions
+    model.eval()
+    final_val_preds = []
+    final_val_labels = []
+    final_val_img_names = []
+
+    with torch.no_grad():
+        for inputs, labels, img_names in dataloaders['validate']:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            preds = torch.sigmoid(outputs)
+            preds_binary = (preds >= threshold).float()
+
+            final_val_preds.append(preds_binary.cpu().numpy())
+            final_val_labels.append(labels.cpu().numpy())
+            final_val_img_names.extend(img_names)
+
+    if len(final_val_preds) > 0 and len(final_val_labels) > 0:
+        final_val_preds = np.vstack(final_val_preds)
+        final_val_labels = np.vstack(final_val_labels)
+        save_predictions(final_val_preds, final_val_labels, final_val_img_names, 'initial', model_name)
     else:
         print("No validation predictions to save.")
 
-    # Plot and save training curves
     plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, 'initial', model_name)
 
-    # Save best performance to summary file
-    save_performance_summary(model_name, best_jaccard, epoch_loss, time_elapsed, 'initial', {
-        'optimizer': optimizer_name,
-        'learning_rate': learning_rate,
-        'batch_size': batch_size,
-        'weight_decay': weight_decay,
-        'num_epochs': num_epochs,
-        'dropout_rate': dropout_rate,
-        'T_0': T_0,
-        'threshold': threshold,
-        'early_stopping_patience': early_stopping_patience
-    })
-
+    final_val_loss = val_losses[-1] if val_losses else float('inf')
+    save_performance_summary(model_name, best_jaccard, final_val_loss,
+                             time_elapsed, 'initial', {
+                                 'optimizer': optimizer_name,
+                                 'learning_rate': learning_rate,
+                                 'batch_size': batch_size,
+                                 'weight_decay': weight_decay,
+                                 'num_epochs': num_epochs_initial,
+                                 'dropout_rate': dropout_rate,
+                                 'T_0': T_0,
+                                 'threshold': threshold,
+                                 'early_stopping_patience': early_stopping_patience_initial
+                             })
     return model
 
 def train_model(trial):
-    # Hyperparameters to tune
-    num_epochs = num_epochs_optuna  # Use fixed number of epochs for Optuna trials
-    early_stopping_patience = early_stopping_patience_optuna  # Use lower patience for Optuna trials
-    batch_size = trial.suggest_categorical('batch_size', [32, 64])
-    learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
-    weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
-    optimizer_name = trial.suggest_categorical('optimizer', ['Adam', 'SGD'])
-    T_0 = trial.suggest_int('T_0', 10, 30, step=10)
-    threshold = trial.suggest_float('threshold', 0.3, 0.7, step=0.05)
-    dropout_rate = trial.suggest_float('dropout_rate', 0.3, 0.7, step=0.1)
+    num_epochs = num_epochs_optuna
+    early_stopping_patience = early_stopping_patience_optuna
 
-    # Data transformations with data augmentation for training
+    batch_size_ = trial.suggest_categorical('batch_size', [32, 64])
+    learning_rate_ = trial.suggest_float('learning_rate', 1e-6, 1e-4, log=True)
+    weight_decay_ = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
+    optimizer_name_ = trial.suggest_categorical('optimizer', ['Adam', 'SGD'])
+    T_0_ = trial.suggest_int('T_0', 10, 30, step=10)
+    threshold_ = trial.suggest_float('threshold', 0.3, 0.7, step=0.05)
+    dropout_rate_ = trial.suggest_float('dropout_rate', 0.3, 0.7, step=0.1)
+
     data_transforms = {
         'train': transforms.Compose([
             transforms.RandomResizedCrop(input_size),
             transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(),
-            transforms.RandomRotation(15),
+            transforms.RandomRotation(5),
             transforms.ToTensor(),
-            # Normalization values are standard for ImageNet
             transforms.Normalize([0.485, 0.456, 0.406],
                                  [0.229, 0.224, 0.225])
         ]),
@@ -427,67 +374,48 @@ def train_model(trial):
             transforms.Resize(input_size + 32),
             transforms.CenterCrop(input_size),
             transforms.ToTensor(),
-            # Normalization values are standard for ImageNet
             transforms.Normalize([0.485, 0.456, 0.406],
                                  [0.229, 0.224, 0.225])
         ]),
     }
 
-    # Load datasets
     datasets_dict = {
         'train': AwA2Dataset(data_dir, 'train', transform=data_transforms['train']),
         'validate': AwA2Dataset(data_dir, 'validate', transform=data_transforms['validate']),
     }
 
-    # Data loaders
     dataloaders = {
-        'train': DataLoader(datasets_dict['train'], batch_size=batch_size,
+        'train': DataLoader(datasets_dict['train'], batch_size=batch_size_,
                             shuffle=True, num_workers=num_workers, pin_memory=False),
-        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size,
+        'validate': DataLoader(datasets_dict['validate'], batch_size=batch_size_,
                                shuffle=False, num_workers=num_workers, pin_memory=False),
     }
-
     dataset_sizes = {x: len(datasets_dict[x]) for x in ['train', 'validate']}
 
-    # Load ResNet-152 model
     from torchvision.models import resnet152
-
     model = resnet152(weights=None)
 
-    # Modify the final layer to match the number of attributes and add dropout
     num_ftrs = model.fc.in_features
     model.fc = nn.Sequential(
-        nn.Dropout(p=dropout_rate),
+        nn.Dropout(p=dropout_rate_),
         nn.Linear(num_ftrs, num_attributes),
     )
     model = model.to(device)
 
-    # Instantiate the loss function
     criterion = SoftJaccardLoss()
 
-    # Define optimizer
-    if optimizer_name == 'Adam':
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    elif optimizer_name == 'SGD':
-        optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
+    if optimizer_name_ == 'Adam':
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate_, weight_decay=weight_decay_)
+    else:
+        optimizer = optim.SGD(model.parameters(), lr=learning_rate_, weight_decay=weight_decay_, momentum=0.9)
 
-    # Define learning rate scheduler (CosineAnnealingWarmRestarts)
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=2)
-
-    # Instantiate early stopping
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0_, T_mult=2)
     early_stopping = EarlyStopping(patience=early_stopping_patience, verbose=True)
 
     since = time.time()
-
     best_model_wts = copy.deepcopy(model.state_dict())
     best_jaccard = 0.0
 
-    # Variables to store best validation results
-    best_val_predictions = None
-    best_val_labels = None
-    best_val_img_names = None
-
-    # Lists to store loss and jaccard scores
     train_losses = []
     val_losses = []
     train_jaccards = []
@@ -497,100 +425,85 @@ def train_model(trial):
         print(f'\nEpoch {epoch+1}/{num_epochs}')
         print('-' * 10)
 
-        # Each epoch has a training and validation phase
         for phase in ['train', 'validate']:
             if phase == 'train':
-                model.train()  # Training mode
+                model.train()
             else:
-                model.eval()   # Evaluation mode
-                val_predictions = []
-                val_labels = []
-                val_img_names = []
+                model.eval()
 
             running_loss = 0.0
             running_jaccard = 0.0
+            sample_count = 0
 
-            progress_bar = tqdm(enumerate(dataloaders[phase]), desc=f"{phase.capitalize()} Epoch {epoch+1}",
+            progress_bar = tqdm(enumerate(dataloaders[phase]),
+                                desc=f"{phase.capitalize()} Epoch {epoch+1}",
                                 total=len(dataloaders[phase]), unit='batch')
 
-            # Iterate over data
-            try:
-                for batch_idx, (inputs, labels, img_names) in progress_bar:
-                    inputs = inputs.to(device)
-                    labels = labels.to(device)
+            for batch_idx, (inputs, labels, _) in progress_bar:
+                inputs, labels = inputs.to(device), labels.to(device)
+                optimizer.zero_grad()
 
-                    # Zero parameter gradients
-                    optimizer.zero_grad()
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
 
-                    # Forward pass
-                    with torch.set_grad_enabled(phase == 'train'):
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                        preds = torch.sigmoid(outputs)
-                        preds_binary = (preds >= threshold).float()
+                    if torch.isnan(loss):
+                        print("Warning: NaN loss encountered. Skipping this batch.")
+                        continue
 
-                        # Backward pass and optimization
-                        if phase == 'train':
-                            loss.backward()
-                            optimizer.step()
+                    preds = torch.sigmoid(outputs)
+                    preds_binary = (preds >= threshold_).float()
 
-                        # Collect predictions and labels for Jaccard score calculation
-                        preds_np = preds_binary.detach().cpu().numpy()
-                        labels_np = labels.detach().cpu().numpy()
+                    if phase == 'train':
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        optimizer.step()
 
-                        # Update running Jaccard score
-                        batch_jaccard = jaccard_score(labels_np, preds_np, average='samples', zero_division=0)
-                        running_jaccard += batch_jaccard * inputs.size(0)
-
-                        if phase == 'validate':
-                            val_predictions.append(preds_np)
-                            val_labels.append(labels_np)
-                            val_img_names.extend(img_names)
-
-                    # Statistics
+                    batch_jaccard = jaccard_score(labels.cpu().numpy(),
+                                                  preds_binary.cpu().numpy(),
+                                                  average='samples',
+                                                  zero_division=0)
+                    running_jaccard += batch_jaccard * inputs.size(0)
                     running_loss += loss.item() * inputs.size(0)
+                    sample_count += inputs.size(0)
 
-                    # Update progress bar
-                    batch_loss = running_loss / ((batch_idx + 1) * inputs.size(0))
-                    batch_jaccard_avg = running_jaccard / ((batch_idx + 1) * inputs.size(0))
-                    progress_bar.set_postfix({'Loss': f'{batch_loss:.4f}', 'Jaccard': f'{batch_jaccard_avg:.4f}'})
-
-                # Calculate epoch loss and Jaccard score
-                epoch_loss = running_loss / dataset_sizes[phase]
-                epoch_jaccard = running_jaccard / dataset_sizes[phase]
-
-                print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
-
-                # Store losses and jaccards
-                if phase == 'train':
-                    train_losses.append(epoch_loss)
-                    train_jaccards.append(epoch_jaccard)
-                    scheduler.step()  # Update learning rate
+                if sample_count > 0:
+                    avg_loss = running_loss / sample_count
+                    avg_jaccard = running_jaccard / sample_count
                 else:
-                    val_losses.append(epoch_loss)
-                    val_jaccards.append(epoch_jaccard)
+                    avg_loss = 0.0
+                    avg_jaccard = 0.0
 
-                    early_stopping(epoch_loss)
+                progress_bar.set_postfix({
+                    'Loss': f'{avg_loss:.4f}',
+                    'Jaccard': f'{avg_jaccard:.4f}'
+                })
 
-                    # Concatenate all predictions and labels
-                    val_predictions = np.vstack(val_predictions)
-                    val_labels = np.vstack(val_labels)
+            if sample_count > 0:
+                epoch_loss = running_loss / sample_count
+                epoch_jaccard = running_jaccard / sample_count
+            else:
+                epoch_loss = 0.0
+                epoch_jaccard = 0.0
 
-                    # Update best model if validation Jaccard improved
-                    if epoch_jaccard > best_jaccard:
-                        best_jaccard = epoch_jaccard
-                        best_model_wts = copy.deepcopy(model.state_dict())
-                        best_val_predictions = val_predictions
-                        best_val_labels = val_labels
-                        best_val_img_names = val_img_names
+            print(f'\n{phase.capitalize()} Loss: {epoch_loss:.4f} Jaccard: {epoch_jaccard:.4f}')
 
-                    if early_stopping.early_stop:
-                        print("Early stopping")
-                        break
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_jaccards.append(epoch_jaccard)
+                scheduler.step()
+            else:
+                val_losses.append(epoch_loss)
+                val_jaccards.append(epoch_jaccard)
+                early_stopping(epoch_loss)
 
-            except RuntimeError as e:
-                print(f"RuntimeError during {phase} phase: {e}")
-                return float('inf')  # Return a large loss value for Optuna to minimize
+                if epoch_jaccard > best_jaccard:
+                    best_jaccard = epoch_jaccard
+                    best_model_wts = copy.deepcopy(model.state_dict())
+
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
 
         if early_stopping.early_stop:
             break
@@ -599,58 +512,67 @@ def train_model(trial):
     print(f'\nTraining complete in {int(time_elapsed // 60)}m {int(time_elapsed % 60)}s')
     print(f'Best Validation Jaccard Score: {best_jaccard:.4f}')
 
-    # Load best model weights
     model.load_state_dict(best_model_wts)
-
-    # Save the best model weights with model name in filename
     model_save_path = os.path.join(output_dir, f'best_model_{model_name}_trial{trial.number}.pth')
     torch.save(model.state_dict(), model_save_path)
     print(f'Best model saved to {model_save_path}')
 
-    # Save validation predictions and labels to file
-    if best_val_predictions is not None and best_val_labels is not None and best_val_img_names is not None:
-        save_predictions(best_val_predictions, best_val_labels, best_val_img_names, trial.number, model_name)
+    # Final validation predictions
+    model.eval()
+    final_val_preds = []
+    final_val_labels = []
+    final_val_img_names = []
+
+    with torch.no_grad():
+        for inputs, labels, img_names in dataloaders['validate']:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            preds = torch.sigmoid(outputs)
+            preds_binary = (preds >= threshold_).float()
+
+            final_val_preds.append(preds_binary.cpu().numpy())
+            final_val_labels.append(labels.cpu().numpy())
+            final_val_img_names.extend(img_names)
+
+    if len(final_val_preds) > 0 and len(final_val_labels) > 0:
+        final_val_preds = np.vstack(final_val_preds)
+        final_val_labels = np.vstack(final_val_labels)
+        save_predictions(final_val_preds, final_val_labels, final_val_img_names, trial.number, model_name)
     else:
         print("No validation predictions to save.")
 
-    # Plot and save training curves
     plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial.number, model_name)
 
-    # Save best performance to summary file
-    save_performance_summary(model_name, best_jaccard, epoch_loss, time_elapsed, trial.number, trial.params)
+    final_val_loss = val_losses[-1] if val_losses else float('inf')
+    save_performance_summary(model_name, best_jaccard, final_val_loss, time_elapsed, trial.number, trial.params)
 
-    # Return the best validation loss for Optuna to minimize
-    return epoch_loss
+    return final_val_loss
 
 def save_predictions(predictions, labels, img_names, trial_number, model_name):
-    # Ensure predictions and labels are NumPy arrays
     predictions = np.asarray(predictions)
     labels = np.asarray(labels)
     img_names = np.asarray(img_names)
 
-    # Remove date time info from filename
     if trial_number == 'initial':
         filename = f'predictions_{model_name}.csv'
     else:
         filename = f'predictions_{model_name}_trial{trial_number}.csv'
 
-    # Save to specified directory
     output_path = os.path.join(output_dir, filename)
-
-    # Build DataFrame with predictions
     df_predictions = pd.DataFrame(predictions.astype(int), columns=attribute_names)
     df_predictions.insert(0, 'image_name', img_names)
-
     df_predictions.to_csv(output_path, index=False)
     print(f'Validation predictions saved to {output_path}')
 
-    # Generate classification report
-    report = classification_report(labels.astype(int), predictions.astype(int), target_names=attribute_names, output_dict=True, zero_division=0)
+    report = classification_report(labels.astype(int), predictions.astype(int),
+                                   target_names=attribute_names, output_dict=True, zero_division=0)
     report_df = pd.DataFrame(report).transpose()
+
     if trial_number == 'initial':
         report_filename = f'classification_report_{model_name}.csv'
     else:
         report_filename = f'classification_report_{model_name}_trial{trial_number}.csv'
+
     report_output_path = os.path.join(output_dir, report_filename)
     report_df.to_csv(report_output_path)
     print(f'Classification report saved to {report_output_path}')
@@ -658,7 +580,6 @@ def save_predictions(predictions, labels, img_names, trial_number, model_name):
 def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards, trial_number, model_name):
     epochs = range(1, len(train_losses) + 1)
 
-    # Remove date time info from filename
     if trial_number == 'initial':
         loss_plot_filename = f'{model_name}_training_validation_loss.png'
         acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy.png'
@@ -666,7 +587,6 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
         loss_plot_filename = f'{model_name}_training_validation_loss_trial{trial_number}.png'
         acc_plot_filename = f'{model_name}_training_validation_jaccard_accuracy_trial{trial_number}.png'
 
-    # Plot Loss
     plt.figure()
     plt.plot(epochs, train_losses, 'b-', label='Training Loss')
     plt.plot(epochs, val_losses, 'r-', label='Validation Loss')
@@ -679,7 +599,6 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
     plt.close()
     print(f'Training and validation loss plot saved to {loss_plot_path}')
 
-    # Plot Jaccard Accuracy
     plt.figure()
     plt.plot(epochs, train_jaccards, 'b-', label='Training Jaccard Accuracy')
     plt.plot(epochs, val_jaccards, 'r-', label='Validation Jaccard Accuracy')
@@ -693,7 +612,6 @@ def plot_training_curves(train_losses, val_losses, train_jaccards, val_jaccards,
     print(f'Training and validation accuracy plot saved to {acc_plot_path}')
 
 def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elapsed, trial_number, params):
-    # Prepare data
     data = {
         'Trial': [trial_number],
         'Model': [model_name],
@@ -703,33 +621,25 @@ def save_performance_summary(model_name, best_jaccard, best_val_loss, time_elaps
         'Timestamp': [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
     }
 
-    # Add parameters to data
     for key, value in params.items():
         data[key.capitalize().replace('_', ' ')] = [value]
 
     df = pd.DataFrame(data)
-
-    # Check if the summary file exists
     if os.path.exists(performance_summary_path):
-        # Append to existing file
         df_existing = pd.read_csv(performance_summary_path)
         df = pd.concat([df_existing, df], ignore_index=True)
-    # Save to CSV
     df.to_csv(performance_summary_path, index=False)
     print(f'Model performance summary updated at {performance_summary_path}')
 
 if __name__ == '__main__':
-    # First, train the initial model
     model = train_initial_model()
 
-    # Then, run Optuna hyperparameter tuning
     study = optuna.create_study(direction='minimize')
     study.optimize(train_model, n_trials=n_trials)
 
     print('Number of finished trials:', len(study.trials))
     print('Best trial:')
     trial = study.best_trial
-
     print(f'  Trial Number: {trial.number}')
     print(f'  Loss: {trial.value}')
     print('  Params: ')
